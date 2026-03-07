@@ -1,0 +1,3 @@
+rootProject.name = 'voxelient'
+
+includeBuild('../voxelite')

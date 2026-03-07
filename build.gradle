@@ -1,0 +1,32 @@
+plugins {
+    id 'java-library'
+}
+
+group = 'kr.co.archan'
+version = '1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+ext {
+    gdxVersion = '1.14.0'
+}
+
+dependencies {
+    api "kr.co.archan:voxelite:1.0-SNAPSHOT"
+    api "com.badlogicgames.gdx:gdx:$gdxVersion"
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.9.3'
+    testImplementation "com.badlogicgames.gdx:gdx-backend-headless:$gdxVersion"
+    testImplementation "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-desktop"
+}
+
+test {
+    useJUnitPlatform()
+}
