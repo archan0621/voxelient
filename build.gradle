@@ -30,3 +30,9 @@ dependencies {
 test {
     useJUnitPlatform()
 }
+
+jar {
+    archiveBaseName.set('voxelient')
+    archiveVersion.set('1.0-SNAPSHOT')
+    from sourceSets.main.output
+}
