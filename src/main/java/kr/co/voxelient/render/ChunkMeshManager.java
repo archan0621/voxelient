@@ -3,6 +3,7 @@ package kr.co.voxelient.render;
 import com.badlogic.gdx.graphics.Camera;
 import com.badlogic.gdx.graphics.g3d.ModelInstance;
 import kr.co.voxelite.world.BlockManager;
+import kr.co.voxelite.world.BlockRenderLayer;
 import kr.co.voxelite.world.Chunk;
 import kr.co.voxelite.world.ChunkCoord;
 import kr.co.voxelite.world.ChunkManager;
@@ -34,9 +35,14 @@ public class ChunkMeshManager {
     private final Queue<CompileBatchResult> completedCompiles = new ConcurrentLinkedQueue<>();
     private final ExecutorService compileExecutor = Executors.newFixedThreadPool(2);
 
-    public ChunkMeshManager(World world, String textureAtlasPath, BlockManager.IBlockTextureProvider textureProvider) {
+    public ChunkMeshManager(
+        World world,
+        String textureAtlasPath,
+        BlockManager.IBlockTextureProvider textureProvider,
+        BlockManager.IBlockRenderLayerProvider renderLayerProvider
+    ) {
         this.world = world;
-        meshBuilder = new BlockMeshBuilder(textureAtlasPath, textureProvider);
+        meshBuilder = new BlockMeshBuilder(textureAtlasPath, textureProvider, renderLayerProvider);
     }
 
     public void processDirtyChunks(int maxPerFrame) {
@@ -81,6 +87,14 @@ public class ChunkMeshManager {
     }
 
     public List<ModelInstance> getVisibleInstances(Camera camera) {
+        List<ModelInstance> visibleInstances = new ArrayList<>();
+        for (BlockRenderLayer renderLayer : BlockRenderLayer.values()) {
+            visibleInstances.addAll(getVisibleInstances(camera, renderLayer));
+        }
+        return visibleInstances;
+    }
+
+    public List<ModelInstance> getVisibleInstances(Camera camera, BlockRenderLayer renderLayer) {
         ChunkManager chunkManager = world.getChunkManager();
         List<ModelInstance> visibleInstances = new ArrayList<>(meshes.size());
         if (chunkManager == null) {
@@ -97,12 +111,12 @@ public class ChunkMeshManager {
             }
 
             ChunkMesh mesh = entry.getValue();
-            if (mesh == null || !mesh.hasInstance()) {
+            if (mesh == null || !mesh.hasInstance(renderLayer)) {
                 continue;
             }
 
             if (camera == null || camera.frustum.boundsInFrustum(mesh.getBounds())) {
-                visibleInstances.add(mesh.getInstance());
+                visibleInstances.add(mesh.getInstance(renderLayer));
             }
         }
         return visibleInstances;

@@ -1,6 +1,7 @@
 package kr.co.voxelient.render;
 
 import com.badlogic.gdx.math.Vector3;
+import kr.co.voxelite.world.BlockRenderLayer;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -16,13 +17,26 @@ public class GreedyMeshBuilder {
         public final int height;
         public final int blockType;
         public final int direction;
+        public final BlockRenderLayer renderLayer;
 
         public MergedQuad(Vector3 origin, int width, int height, int blockType, int direction) {
+            this(origin, width, height, blockType, direction, BlockRenderLayer.SOLID);
+        }
+
+        public MergedQuad(
+            Vector3 origin,
+            int width,
+            int height,
+            int blockType,
+            int direction,
+            BlockRenderLayer renderLayer
+        ) {
             this.origin = origin;
             this.width = width;
             this.height = height;
             this.blockType = blockType;
             this.direction = direction;
+            this.renderLayer = renderLayer != null ? renderLayer : BlockRenderLayer.SOLID;
         }
     }
 
@@ -74,7 +88,7 @@ public class GreedyMeshBuilder {
                 boolean[] visibleFaces = visibleFacesMap.get(pos);
                 if (visibleFaces != null) {
                     grid[x - minX][y - minY][z - minZ] =
-                        new BlockMeshBuilder.BlockData(new Vector3(pos), block.blockType, visibleFaces);
+                        new BlockMeshBuilder.BlockData(new Vector3(pos), block.blockType, visibleFaces, block.renderLayer);
                 }
             }
         }
@@ -94,6 +108,11 @@ public class GreedyMeshBuilder {
         public int getBlockType(int x, int y, int z) {
             BlockMeshBuilder.BlockData info = get(x, y, z);
             return info != null ? info.blockType : -1;
+        }
+
+        public BlockRenderLayer getRenderLayer(int x, int y, int z) {
+            BlockMeshBuilder.BlockData info = get(x, y, z);
+            return info != null ? info.renderLayer : BlockRenderLayer.SOLID;
         }
     }
 
@@ -148,11 +167,13 @@ public class GreedyMeshBuilder {
                     }
 
                     int blockType = grid.getBlockType(x, y, z);
+                    BlockRenderLayer renderLayer = grid.getRenderLayer(x, y, z);
                     int width = 1;
                     while (x + width <= grid.maxX
                         && !visited[x + width - grid.minX][y - grid.minY][z - grid.minZ]
                         && grid.hasFace(x + width, y, z, direction)
-                        && grid.getBlockType(x + width, y, z) == blockType) {
+                        && grid.getBlockType(x + width, y, z) == blockType
+                        && grid.getRenderLayer(x + width, y, z) == renderLayer) {
                         width++;
                     }
 
@@ -162,7 +183,8 @@ public class GreedyMeshBuilder {
                         for (int dx = 0; dx < width; dx++) {
                             if (visited[x + dx - grid.minX][y + height - grid.minY][z - grid.minZ]
                                 || !grid.hasFace(x + dx, y + height, z, direction)
-                                || grid.getBlockType(x + dx, y + height, z) != blockType) {
+                                || grid.getBlockType(x + dx, y + height, z) != blockType
+                                || grid.getRenderLayer(x + dx, y + height, z) != renderLayer) {
                                 canExpandY = false;
                                 break;
                             }
@@ -172,7 +194,7 @@ public class GreedyMeshBuilder {
                         }
                     }
 
-                    quads.add(new MergedQuad(new Vector3(x, y, z), width, height, blockType, direction));
+                    quads.add(new MergedQuad(new Vector3(x, y, z), width, height, blockType, direction, renderLayer));
                     for (int dy = 0; dy < height; dy++) {
                         for (int dx = 0; dx < width; dx++) {
                             visited[x + dx - grid.minX][y + dy - grid.minY][z - grid.minZ] = true;
@@ -194,11 +216,13 @@ public class GreedyMeshBuilder {
                     }
 
                     int blockType = grid.getBlockType(x, y, z);
+                    BlockRenderLayer renderLayer = grid.getRenderLayer(x, y, z);
                     int width = 1;
                     while (z + width <= grid.maxZ
                         && !visited[x - grid.minX][y - grid.minY][z + width - grid.minZ]
                         && grid.hasFace(x, y, z + width, direction)
-                        && grid.getBlockType(x, y, z + width) == blockType) {
+                        && grid.getBlockType(x, y, z + width) == blockType
+                        && grid.getRenderLayer(x, y, z + width) == renderLayer) {
                         width++;
                     }
 
@@ -208,7 +232,8 @@ public class GreedyMeshBuilder {
                         for (int dz = 0; dz < width; dz++) {
                             if (visited[x - grid.minX][y + height - grid.minY][z + dz - grid.minZ]
                                 || !grid.hasFace(x, y + height, z + dz, direction)
-                                || grid.getBlockType(x, y + height, z + dz) != blockType) {
+                                || grid.getBlockType(x, y + height, z + dz) != blockType
+                                || grid.getRenderLayer(x, y + height, z + dz) != renderLayer) {
                                 canExpandY = false;
                                 break;
                             }
@@ -218,7 +243,7 @@ public class GreedyMeshBuilder {
                         }
                     }
 
-                    quads.add(new MergedQuad(new Vector3(x, y, z), width, height, blockType, direction));
+                    quads.add(new MergedQuad(new Vector3(x, y, z), width, height, blockType, direction, renderLayer));
                     for (int dy = 0; dy < height; dy++) {
                         for (int dz = 0; dz < width; dz++) {
                             visited[x - grid.minX][y + dy - grid.minY][z + dz - grid.minZ] = true;
@@ -240,11 +265,13 @@ public class GreedyMeshBuilder {
                     }
 
                     int blockType = grid.getBlockType(x, y, z);
+                    BlockRenderLayer renderLayer = grid.getRenderLayer(x, y, z);
                     int width = 1;
                     while (x + width <= grid.maxX
                         && !visited[x + width - grid.minX][y - grid.minY][z - grid.minZ]
                         && grid.hasFace(x + width, y, z, direction)
-                        && grid.getBlockType(x + width, y, z) == blockType) {
+                        && grid.getBlockType(x + width, y, z) == blockType
+                        && grid.getRenderLayer(x + width, y, z) == renderLayer) {
                         width++;
                     }
 
@@ -254,7 +281,8 @@ public class GreedyMeshBuilder {
                         for (int dx = 0; dx < width; dx++) {
                             if (visited[x + dx - grid.minX][y - grid.minY][z + depth - grid.minZ]
                                 || !grid.hasFace(x + dx, y, z + depth, direction)
-                                || grid.getBlockType(x + dx, y, z + depth) != blockType) {
+                                || grid.getBlockType(x + dx, y, z + depth) != blockType
+                                || grid.getRenderLayer(x + dx, y, z + depth) != renderLayer) {
                                 canExpandZ = false;
                                 break;
                             }
@@ -264,7 +292,7 @@ public class GreedyMeshBuilder {
                         }
                     }
 
-                    quads.add(new MergedQuad(new Vector3(x, y, z), width, depth, blockType, direction));
+                    quads.add(new MergedQuad(new Vector3(x, y, z), width, depth, blockType, direction, renderLayer));
                     for (int dz = 0; dz < depth; dz++) {
                         for (int dx = 0; dx < width; dx++) {
                             visited[x + dx - grid.minX][y - grid.minY][z + dz - grid.minZ] = true;

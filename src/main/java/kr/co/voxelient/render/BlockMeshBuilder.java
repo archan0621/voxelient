@@ -6,6 +6,7 @@ import com.badlogic.gdx.graphics.Texture;
 import com.badlogic.gdx.graphics.VertexAttributes;
 import com.badlogic.gdx.graphics.g3d.Material;
 import com.badlogic.gdx.graphics.g3d.Model;
+import com.badlogic.gdx.graphics.g3d.attributes.BlendingAttribute;
 import com.badlogic.gdx.graphics.g3d.attributes.TextureAttribute;
 import com.badlogic.gdx.graphics.g3d.utils.MeshPartBuilder;
 import com.badlogic.gdx.graphics.g3d.utils.ModelBuilder;
@@ -13,6 +14,7 @@ import com.badlogic.gdx.math.Vector3;
 import com.badlogic.gdx.math.collision.BoundingBox;
 import kr.co.voxelite.util.PerformanceLogger;
 import kr.co.voxelite.world.BlockManager;
+import kr.co.voxelite.world.BlockRenderLayer;
 import kr.co.voxelite.world.Chunk;
 import kr.co.voxelite.world.ChunkCoord;
 import kr.co.voxelite.world.ChunkManager;
@@ -20,6 +22,7 @@ import kr.co.voxelite.world.RenderSectionKey;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.HashMap;
 import java.util.List;
@@ -35,10 +38,20 @@ public class BlockMeshBuilder {
     private final float tileSize = 1.0f / atlasGridSize;
     private final float blockSize = 0.5f;
     private final BlockManager.IBlockTextureProvider textureProvider;
+    private final BlockManager.IBlockRenderLayerProvider renderLayerProvider;
 
     public BlockMeshBuilder(String atlasPath, BlockManager.IBlockTextureProvider textureProvider) {
+        this(atlasPath, textureProvider, null);
+    }
+
+    public BlockMeshBuilder(
+        String atlasPath,
+        BlockManager.IBlockTextureProvider textureProvider,
+        BlockManager.IBlockRenderLayerProvider renderLayerProvider
+    ) {
         blockAtlas = atlasPath != null ? new Texture(Gdx.files.internal(atlasPath)) : null;
         this.textureProvider = textureProvider;
+        this.renderLayerProvider = renderLayerProvider;
     }
 
     public Map<RenderSectionKey, ChunkMesh> buildChunkMeshes(Chunk chunk, ChunkManager chunkManager) {
@@ -107,8 +120,9 @@ public class BlockMeshBuilder {
 
             Vector3 copiedPos = new Vector3(pos);
             boolean[] copiedVisibleFaces = visibleFaces.clone();
+            BlockRenderLayer renderLayer = getRenderLayer(block.blockType);
             SectionBuildAccumulator accumulator = sectionData.get(sectionY);
-            accumulator.blocks.add(new BlockData(copiedPos, block.blockType, copiedVisibleFaces));
+            accumulator.blocks.add(new BlockData(copiedPos, block.blockType, copiedVisibleFaces, renderLayer));
             accumulator.visibleFacesMap.put(copiedPos, copiedVisibleFaces);
         }
 
@@ -173,26 +187,40 @@ public class BlockMeshBuilder {
 
         long t0 = PerformanceLogger.now();
         List<GreedyMeshBuilder.MergedQuad> mergedQuads = compiledSection.mergedQuads();
+        Map<BlockRenderLayer, List<GreedyMeshBuilder.MergedQuad>> quadsByLayer = groupQuadsByLayer(mergedQuads);
+
+        ChunkMesh mesh = new ChunkMesh();
+        mesh.setBounds(compiledSection.bounds());
+        for (Map.Entry<BlockRenderLayer, List<GreedyMeshBuilder.MergedQuad>> entry : quadsByLayer.entrySet()) {
+            mesh.setModel(entry.getKey(), buildLayerModel(entry.getKey(), entry.getValue()));
+        }
+
+        long t1 = PerformanceLogger.now();
+        if (PerformanceLogger.ENABLED && (t1 - t0) > 10) {
+            System.out.printf("[PERF][BlockMeshBuilder] buildCompiledChunkMesh: mesh=%dms quads=%d%n",
+                t1 - t0, mergedQuads.size());
+        }
+        return mesh;
+    }
+
+    private Model buildLayerModel(BlockRenderLayer renderLayer, List<GreedyMeshBuilder.MergedQuad> quads) {
         ModelBuilder builder = new ModelBuilder();
         builder.begin();
-
-        Material opaqueMaterial = blockAtlas != null
-            ? new Material(TextureAttribute.createDiffuse(blockAtlas))
-            : new Material();
 
         long attributes = VertexAttributes.Usage.Position
             | VertexAttributes.Usage.Normal
             | VertexAttributes.Usage.TextureCoordinates;
 
-        MeshPartBuilder meshPartBuilder = null;
+        MeshPartBuilder meshPartBuilder = builder.part(
+            "chunk_" + renderLayer.name().toLowerCase(),
+            GL20.GL_TRIANGLES,
+            attributes,
+            createMaterial(renderLayer)
+        );
+
         Vector3 normal = new Vector3();
         float s = blockSize;
-
-        for (GreedyMeshBuilder.MergedQuad quad : mergedQuads) {
-            if (meshPartBuilder == null) {
-                meshPartBuilder = builder.part("chunk", GL20.GL_TRIANGLES, attributes, opaqueMaterial);
-            }
-
+        for (GreedyMeshBuilder.MergedQuad quad : quads) {
             int textureIndex = getTextureForFace(quad.blockType, quad.direction);
             int tileX = textureIndex % atlasGridSize;
             int tileY = textureIndex / atlasGridSize;
@@ -213,17 +241,29 @@ public class BlockMeshBuilder {
             );
         }
 
-        Model model = builder.end();
-        long t1 = PerformanceLogger.now();
-        if (PerformanceLogger.ENABLED && (t1 - t0) > 10) {
-            System.out.printf("[PERF][BlockMeshBuilder] buildCompiledChunkMesh: mesh=%dms quads=%d%n",
-                t1 - t0, mergedQuads.size());
-        }
+        return builder.end();
+    }
 
-        ChunkMesh mesh = new ChunkMesh();
-        mesh.setModel(model);
-        mesh.setBounds(compiledSection.bounds());
-        return mesh;
+    private Map<BlockRenderLayer, List<GreedyMeshBuilder.MergedQuad>> groupQuadsByLayer(List<GreedyMeshBuilder.MergedQuad> quads) {
+        Map<BlockRenderLayer, List<GreedyMeshBuilder.MergedQuad>> quadsByLayer = new EnumMap<>(BlockRenderLayer.class);
+        for (BlockRenderLayer renderLayer : BlockRenderLayer.values()) {
+            quadsByLayer.put(renderLayer, new ArrayList<>());
+        }
+        for (GreedyMeshBuilder.MergedQuad quad : quads) {
+            quadsByLayer.get(quad.renderLayer).add(quad);
+        }
+        quadsByLayer.entrySet().removeIf(entry -> entry.getValue().isEmpty());
+        return quadsByLayer;
+    }
+
+    private Material createMaterial(BlockRenderLayer renderLayer) {
+        Material material = blockAtlas != null
+            ? new Material(TextureAttribute.createDiffuse(blockAtlas))
+            : new Material();
+        if (renderLayer == BlockRenderLayer.TRANSLUCENT) {
+            material.set(new BlendingAttribute(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA, 0.65f));
+        }
+        return material;
     }
 
     private int getTextureForFace(int blockType, int faceIndex) {
@@ -231,6 +271,16 @@ public class BlockMeshBuilder {
             return textureProvider.getTexture(blockType, faceIndex);
         }
         return blockType;
+    }
+
+    private BlockRenderLayer getRenderLayer(int blockType) {
+        if (renderLayerProvider != null) {
+            BlockRenderLayer renderLayer = renderLayerProvider.getRenderLayer(blockType);
+            if (renderLayer != null) {
+                return renderLayer;
+            }
+        }
+        return BlockRenderLayer.SOLID;
     }
 
     private void createMergedFaceWithRepeatingUV(
@@ -372,11 +422,17 @@ public class BlockMeshBuilder {
         public final Vector3 position;
         public final int blockType;
         public final boolean[] visibleFaces;
+        public final BlockRenderLayer renderLayer;
 
         public BlockData(Vector3 position, int blockType, boolean[] visibleFaces) {
+            this(position, blockType, visibleFaces, BlockRenderLayer.SOLID);
+        }
+
+        public BlockData(Vector3 position, int blockType, boolean[] visibleFaces, BlockRenderLayer renderLayer) {
             this.position = position;
             this.blockType = blockType;
             this.visibleFaces = visibleFaces;
+            this.renderLayer = renderLayer != null ? renderLayer : BlockRenderLayer.SOLID;
         }
     }
 

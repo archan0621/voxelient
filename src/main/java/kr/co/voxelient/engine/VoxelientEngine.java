@@ -57,7 +57,12 @@ public class VoxelientEngine {
         cameraController = new CameraController(camera, coreEngine.getPlayer(), coreEngine.getPhysics(), input);
         cameraController.setMoveSpeed(config.playerMoveSpeed);
 
-        chunkMeshManager = new ChunkMeshManager(coreEngine.getWorld(), config.textureAtlasPath, config.textureProvider);
+        chunkMeshManager = new ChunkMeshManager(
+            coreEngine.getWorld(),
+            config.textureAtlasPath,
+            config.textureProvider,
+            config.renderLayerProvider
+        );
         renderer = new Renderer(screenWidth, screenHeight);
         initialized = true;
     }
@@ -178,6 +183,11 @@ public class VoxelientEngine {
 
         public Builder textureProvider(kr.co.voxelite.world.BlockManager.IBlockTextureProvider provider) {
             configBuilder.textureProvider(provider);
+            return this;
+        }
+
+        public Builder renderLayerProvider(kr.co.voxelite.world.BlockManager.IBlockRenderLayerProvider provider) {
+            configBuilder.renderLayerProvider(provider);
             return this;
         }
 

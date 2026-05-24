@@ -1,5 +1,7 @@
 package kr.co.voxelient.render;
 
+import com.badlogic.gdx.Gdx;
+import com.badlogic.gdx.graphics.GL20;
 import com.badlogic.gdx.graphics.Color;
 import com.badlogic.gdx.graphics.PerspectiveCamera;
 import com.badlogic.gdx.graphics.g3d.Environment;
@@ -9,6 +11,7 @@ import com.badlogic.gdx.graphics.g3d.attributes.ColorAttribute;
 import com.badlogic.gdx.graphics.g3d.shaders.DefaultShader;
 import com.badlogic.gdx.graphics.g3d.utils.DefaultShaderProvider;
 import kr.co.voxelite.util.PerformanceLogger;
+import kr.co.voxelite.world.BlockRenderLayer;
 
 import java.util.List;
 import java.util.Locale;
@@ -69,18 +72,33 @@ public class BlockRenderer {
 
     public void render(PerspectiveCamera camera, ChunkMeshManager meshManager) {
         long t0 = PerformanceLogger.now();
+        int drawCalls = 0;
+
+        drawCalls += renderLayer(camera, meshManager, BlockRenderLayer.SOLID);
+        drawCalls += renderLayer(camera, meshManager, BlockRenderLayer.CUTOUT);
+
+        Gdx.gl.glEnable(GL20.GL_BLEND);
+        Gdx.gl.glBlendFunc(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA);
+        Gdx.gl.glDepthMask(false);
+        drawCalls += renderLayer(camera, meshManager, BlockRenderLayer.TRANSLUCENT);
+        Gdx.gl.glDepthMask(true);
+        Gdx.gl.glDisable(GL20.GL_BLEND);
+
+        long t2 = PerformanceLogger.now();
+        if (PerformanceLogger.ENABLED && (t2 - t0 > 5 || drawCalls > 30)) {
+            System.out.printf("[PERF][BlockRenderer] render=%dms drawCalls=%d%n",
+                t2 - t0, drawCalls);
+        }
+    }
+
+    private int renderLayer(PerspectiveCamera camera, ChunkMeshManager meshManager, BlockRenderLayer renderLayer) {
         modelBatch.begin(camera);
-        List<ModelInstance> instances = meshManager.getVisibleInstances(camera);
-        long t1 = PerformanceLogger.now();
+        List<ModelInstance> instances = meshManager.getVisibleInstances(camera, renderLayer);
         for (ModelInstance instance : instances) {
             modelBatch.render(instance, environment);
         }
         modelBatch.end();
-        long t2 = PerformanceLogger.now();
-        if (PerformanceLogger.ENABLED && (t2 - t0 > 5 || instances.size() > 30)) {
-            System.out.printf("[PERF][BlockRenderer] getInstances=%dms render=%dms drawCalls=%d%n",
-                t1 - t0, t2 - t1, instances.size());
-        }
+        return instances.size();
     }
 
     public void dispose() {

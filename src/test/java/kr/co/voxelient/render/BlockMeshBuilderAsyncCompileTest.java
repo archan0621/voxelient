@@ -6,6 +6,7 @@ import kr.co.voxelite.world.ChunkManager;
 import kr.co.voxelite.world.IChunkGenerator;
 import kr.co.voxelite.world.IChunkLoadPolicy;
 import kr.co.voxelite.world.RenderSectionKey;
+import kr.co.voxelite.world.BlockRenderLayer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -63,6 +64,32 @@ class BlockMeshBuilderAsyncCompileTest {
 
         assertTrue(inputs.containsKey(new RenderSectionKey(new ChunkCoord(0, 0), 1)));
         assertTrue(inputs.get(new RenderSectionKey(new ChunkCoord(0, 0), 1)).blocks().isEmpty());
+    }
+
+    @Test
+    void compileSectionMeshes_ShouldCarryRenderLayersIntoMergedQuads() {
+        ChunkManager chunkManager = createChunkManager();
+        Chunk chunk = new Chunk(new ChunkCoord(0, 0));
+        chunk.addBlockLocal(0, 0f, 0, 1);
+        chunk.addBlockLocal(2, 0f, 0, 6);
+        chunk.markAsGenerated();
+        chunkManager.replaceChunk(chunk);
+
+        BlockMeshBuilder builder = new BlockMeshBuilder(
+            null,
+            null,
+            blockType -> blockType == 6 ? BlockRenderLayer.TRANSLUCENT : BlockRenderLayer.SOLID
+        );
+        Map<RenderSectionKey, BlockMeshBuilder.SectionBuildInput> inputs =
+            builder.prepareSectionBuildInputs(chunk, chunkManager, Set.of(0));
+        Map<RenderSectionKey, BlockMeshBuilder.CompiledSectionMesh> compiled =
+            builder.compileSectionMeshes(inputs);
+
+        BlockMeshBuilder.CompiledSectionMesh section =
+            compiled.get(new RenderSectionKey(new ChunkCoord(0, 0), 0));
+
+        assertTrue(section.mergedQuads().stream().anyMatch(quad -> quad.renderLayer == BlockRenderLayer.SOLID));
+        assertTrue(section.mergedQuads().stream().anyMatch(quad -> quad.renderLayer == BlockRenderLayer.TRANSLUCENT));
     }
 
     private ChunkManager createChunkManager() {

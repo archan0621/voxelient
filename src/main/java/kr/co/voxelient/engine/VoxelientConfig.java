@@ -8,6 +8,7 @@ import kr.co.voxelite.world.BlockManager;
 public class VoxelientConfig {
     public String textureAtlasPath = null;
     public BlockManager.IBlockTextureProvider textureProvider = null;
+    public BlockManager.IBlockRenderLayerProvider renderLayerProvider = null;
     public float fieldOfView = 67f;
     public float initialPitch = -20f;
     public float cameraFar = 160f;
@@ -30,6 +31,11 @@ public class VoxelientConfig {
 
         public Builder textureProvider(BlockManager.IBlockTextureProvider provider) {
             config.textureProvider = provider;
+            return this;
+        }
+
+        public Builder renderLayerProvider(BlockManager.IBlockRenderLayerProvider provider) {
+            config.renderLayerProvider = provider;
             return this;
         }
 
