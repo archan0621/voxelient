@@ -12,6 +12,8 @@ public class VoxelientConfig {
     public float fieldOfView = 67f;
     public float initialPitch = -20f;
     public float cameraFar = 160f;
+    public float fogStartRatio = 0.78f;
+    public float fogEndRatio = 0.94f;
     public float mouseSensitivity = 0.1f;
     public float playerMoveSpeed = 5f;
     public int chunkMeshBuildPerFrame = 2;
@@ -51,6 +53,12 @@ public class VoxelientConfig {
 
         public Builder cameraFar(float far) {
             config.cameraFar = far;
+            return this;
+        }
+
+        public Builder fogRange(float startRatio, float endRatio) {
+            config.fogStartRatio = startRatio;
+            config.fogEndRatio = endRatio;
             return this;
         }
 

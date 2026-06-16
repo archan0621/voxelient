@@ -15,7 +15,11 @@ public class Renderer {
     private final HudRenderer hudRenderer;
 
     public Renderer(int screenWidth, int screenHeight) {
-        blockRenderer = new BlockRenderer();
+        this(screenWidth, screenHeight, 0.78f, 0.94f);
+    }
+
+    public Renderer(int screenWidth, int screenHeight, float fogStartRatio, float fogEndRatio) {
+        blockRenderer = new BlockRenderer(fogStartRatio, fogEndRatio);
         crosshairRenderer = new CrosshairRenderer(screenWidth, screenHeight);
         blockOutlineRenderer = new BlockOutlineRenderer();
         hudRenderer = new HudRenderer();

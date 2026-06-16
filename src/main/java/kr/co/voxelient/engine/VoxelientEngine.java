@@ -63,7 +63,7 @@ public class VoxelientEngine {
             config.textureProvider,
             config.renderLayerProvider
         );
-        renderer = new Renderer(screenWidth, screenHeight);
+        renderer = new Renderer(screenWidth, screenHeight, config.fogStartRatio, config.fogEndRatio);
         initialized = true;
     }
 
@@ -203,6 +203,11 @@ public class VoxelientEngine {
 
         public Builder cameraFar(float far) {
             configBuilder.cameraFar(far);
+            return this;
+        }
+
+        public Builder fogRange(float startRatio, float endRatio) {
+            configBuilder.fogRange(startRatio, endRatio);
             return this;
         }
 

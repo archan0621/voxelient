@@ -21,13 +21,19 @@ import java.util.Locale;
  */
 public class BlockRenderer {
     private static final Color FOG_COLOR = new Color(0.87f, 0.95f, 1.0f, 1f);
-    private static final float FOG_START_RATIO = 0.78f;
-    private static final float FOG_END_RATIO = 0.94f;
 
     private final ModelBatch modelBatch;
     private final Environment environment;
+    private final float fogStartRatio;
+    private final float fogEndRatio;
 
     public BlockRenderer() {
+        this(0.78f, 0.94f);
+    }
+
+    public BlockRenderer(float fogStartRatio, float fogEndRatio) {
+        this.fogStartRatio = clampFogRatio(fogStartRatio, 0.78f);
+        this.fogEndRatio = clampFogEndRatio(this.fogStartRatio, fogEndRatio);
         modelBatch = new ModelBatch(new DefaultShaderProvider(createShaderConfig()));
         environment = new Environment();
         environment.set(new ColorAttribute(ColorAttribute.AmbientLight, 1f, 1f, 1f, 1f));
@@ -60,8 +66,8 @@ public class BlockRenderer {
                 + "        float fogRange = max(fogEnd - fogStart, 0.0001);%n"
                 + "        v_fog = clamp((fogDistance - fogStart) / fogRange, 0.0, 1.0);%n"
                 + "    #endif%n",
-            FOG_START_RATIO,
-            FOG_END_RATIO
+            fogStartRatio,
+            fogEndRatio
         );
 
         if (!defaultVertexShader.contains(fogBlock)) {
@@ -103,5 +109,17 @@ public class BlockRenderer {
 
     public void dispose() {
         modelBatch.dispose();
+    }
+
+    private float clampFogRatio(float value, float fallback) {
+        if (!Float.isFinite(value)) {
+            return fallback;
+        }
+        return Math.max(0f, Math.min(0.99f, value));
+    }
+
+    private float clampFogEndRatio(float startRatio, float endRatio) {
+        float safeEnd = Math.max(0f, Math.min(1f, Float.isFinite(endRatio) ? endRatio : 0.94f));
+        return Math.max(startRatio + 0.01f, safeEnd);
     }
 }
