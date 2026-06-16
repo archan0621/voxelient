@@ -28,12 +28,15 @@ import java.util.concurrent.TimeUnit;
  * Manages client-side chunk mesh cache.
  */
 public class ChunkMeshManager {
+    private static final int MAX_IN_FLIGHT_COMPILES = 8;
+
     private final World world;
     private final BlockMeshBuilder meshBuilder;
     private final Map<RenderSectionKey, ChunkMesh> meshes = new HashMap<>();
     private final Map<RenderSectionKey, Integer> buildVersions = new HashMap<>();
     private final Queue<CompileBatchResult> completedCompiles = new ConcurrentLinkedQueue<>();
     private final ExecutorService compileExecutor = Executors.newFixedThreadPool(2);
+    private int inFlightCompiles = 0;
 
     public ChunkMeshManager(
         World world,
@@ -54,9 +57,14 @@ public class ChunkMeshManager {
         applyCompletedCompiles(chunkManager);
         sweepStaleMeshes();
 
+        int availableCompileSlots = Math.min(maxPerFrame, MAX_IN_FLIGHT_COMPILES - inFlightCompiles);
+        if (availableCompileSlots <= 0) {
+            return;
+        }
+
         int selectedChunks = 0;
         Map<ChunkCoord, Set<Integer>> dirtySectionsByChunk = new LinkedHashMap<>();
-        while (selectedChunks < maxPerFrame) {
+        while (selectedChunks < availableCompileSlots) {
             RenderSectionKey key = chunkManager.pollDirtySection();
             if (key == null) {
                 break;
@@ -140,6 +148,7 @@ public class ChunkMeshManager {
         buildVersions.clear();
         completedCompiles.clear();
         meshBuilder.dispose();
+        inFlightCompiles = 0;
     }
 
     private void sweepStaleMeshes() {
@@ -193,11 +202,22 @@ public class ChunkMeshManager {
             versions.put(key, version);
         }
 
-        compileExecutor.submit(() -> {
-            Map<RenderSectionKey, BlockMeshBuilder.CompiledSectionMesh> compiledSections =
-                meshBuilder.compileSectionMeshes(sectionInputs);
-            completedCompiles.offer(new CompileBatchResult(Map.copyOf(versions), Map.copyOf(compiledSections)));
-        });
+        inFlightCompiles++;
+        try {
+            compileExecutor.submit(() -> {
+                Map<RenderSectionKey, BlockMeshBuilder.CompiledSectionMesh> compiledSections;
+                try {
+                    compiledSections = meshBuilder.compileSectionMeshes(sectionInputs);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    compiledSections = Map.of();
+                }
+                completedCompiles.offer(new CompileBatchResult(Map.copyOf(versions), Map.copyOf(compiledSections)));
+            });
+        } catch (RuntimeException e) {
+            inFlightCompiles = Math.max(0, inFlightCompiles - 1);
+            throw e;
+        }
     }
 
     private void disposeSectionMesh(RenderSectionKey key) {
@@ -210,6 +230,7 @@ public class ChunkMeshManager {
     private void applyCompletedCompiles(ChunkManager chunkManager) {
         CompileBatchResult result;
         while ((result = completedCompiles.poll()) != null) {
+            inFlightCompiles = Math.max(0, inFlightCompiles - 1);
             for (Map.Entry<RenderSectionKey, Integer> versionEntry : result.versions().entrySet()) {
                 RenderSectionKey key = versionEntry.getKey();
                 Integer expectedVersion = buildVersions.get(key);
