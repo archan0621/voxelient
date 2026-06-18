@@ -80,21 +80,39 @@ public class BlockRenderer {
         long t0 = PerformanceLogger.now();
         int drawCalls = 0;
 
+        beginOpaqueState();
         drawCalls += renderLayer(camera, meshManager, BlockRenderLayer.SOLID);
         drawCalls += renderLayer(camera, meshManager, BlockRenderLayer.CUTOUT);
 
-        Gdx.gl.glEnable(GL20.GL_BLEND);
-        Gdx.gl.glBlendFunc(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA);
-        Gdx.gl.glDepthMask(false);
+        beginTranslucentState();
         drawCalls += renderLayer(camera, meshManager, BlockRenderLayer.TRANSLUCENT);
-        Gdx.gl.glDepthMask(true);
-        Gdx.gl.glDisable(GL20.GL_BLEND);
+        endTranslucentState();
 
         long t2 = PerformanceLogger.now();
         if (PerformanceLogger.ENABLED && (t2 - t0 > 5 || drawCalls > 30)) {
             System.out.printf("[PERF][BlockRenderer] render=%dms drawCalls=%d%n",
                 t2 - t0, drawCalls);
         }
+    }
+
+    private void beginOpaqueState() {
+        Gdx.gl.glEnable(GL20.GL_DEPTH_TEST);
+        Gdx.gl.glDepthFunc(GL20.GL_LEQUAL);
+        Gdx.gl.glDepthMask(true);
+        Gdx.gl.glDisable(GL20.GL_BLEND);
+    }
+
+    private void beginTranslucentState() {
+        Gdx.gl.glEnable(GL20.GL_DEPTH_TEST);
+        Gdx.gl.glDepthFunc(GL20.GL_LEQUAL);
+        Gdx.gl.glEnable(GL20.GL_BLEND);
+        Gdx.gl.glBlendFunc(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA);
+        Gdx.gl.glDepthMask(false);
+    }
+
+    private void endTranslucentState() {
+        Gdx.gl.glDepthMask(true);
+        Gdx.gl.glDisable(GL20.GL_BLEND);
     }
 
     private int renderLayer(PerspectiveCamera camera, ChunkMeshManager meshManager, BlockRenderLayer renderLayer) {

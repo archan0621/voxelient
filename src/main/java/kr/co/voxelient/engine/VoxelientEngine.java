@@ -49,6 +49,7 @@ public class VoxelientEngine {
 
         camera = new FPSCamera(config.fieldOfView, screenWidth, screenHeight);
         camera.setPitch(config.initialPitch);
+        camera.setNear(config.cameraNear);
         camera.setFar(config.cameraFar);
 
         input = new InputHandler();

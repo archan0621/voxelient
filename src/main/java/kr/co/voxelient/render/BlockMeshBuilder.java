@@ -7,6 +7,7 @@ import com.badlogic.gdx.graphics.VertexAttributes;
 import com.badlogic.gdx.graphics.g3d.Material;
 import com.badlogic.gdx.graphics.g3d.Model;
 import com.badlogic.gdx.graphics.g3d.attributes.BlendingAttribute;
+import com.badlogic.gdx.graphics.g3d.attributes.DepthTestAttribute;
 import com.badlogic.gdx.graphics.g3d.attributes.TextureAttribute;
 import com.badlogic.gdx.graphics.g3d.utils.MeshPartBuilder;
 import com.badlogic.gdx.graphics.g3d.utils.ModelBuilder;
@@ -112,12 +113,12 @@ public class BlockMeshBuilder {
             }
 
             boolean[] visibleFaces = new boolean[6];
-            visibleFaces[0] = !chunkManager.hasBlockAt(pos.x, pos.y, pos.z + 1);
-            visibleFaces[1] = !chunkManager.hasBlockAt(pos.x, pos.y, pos.z - 1);
-            visibleFaces[2] = !chunkManager.hasBlockAt(pos.x - 1, pos.y, pos.z);
-            visibleFaces[3] = !chunkManager.hasBlockAt(pos.x + 1, pos.y, pos.z);
-            visibleFaces[4] = !chunkManager.hasBlockAt(pos.x, pos.y + 1, pos.z);
-            visibleFaces[5] = !chunkManager.hasBlockAt(pos.x, pos.y - 1, pos.z);
+            visibleFaces[0] = isFaceVisible(block.blockType, renderLayer, chunkManager.getBlockTypeAt(pos.x, pos.y, pos.z + 1));
+            visibleFaces[1] = isFaceVisible(block.blockType, renderLayer, chunkManager.getBlockTypeAt(pos.x, pos.y, pos.z - 1));
+            visibleFaces[2] = isFaceVisible(block.blockType, renderLayer, chunkManager.getBlockTypeAt(pos.x - 1, pos.y, pos.z));
+            visibleFaces[3] = isFaceVisible(block.blockType, renderLayer, chunkManager.getBlockTypeAt(pos.x + 1, pos.y, pos.z));
+            visibleFaces[4] = isFaceVisible(block.blockType, renderLayer, chunkManager.getBlockTypeAt(pos.x, pos.y + 1, pos.z));
+            visibleFaces[5] = isFaceVisible(block.blockType, renderLayer, chunkManager.getBlockTypeAt(pos.x, pos.y - 1, pos.z));
 
             if (!visibleFaces[0] && !visibleFaces[1] && !visibleFaces[2]
                 && !visibleFaces[3] && !visibleFaces[4] && !visibleFaces[5]) {
@@ -270,6 +271,9 @@ public class BlockMeshBuilder {
             : new Material();
         if (renderLayer == BlockRenderLayer.TRANSLUCENT) {
             material.set(new BlendingAttribute(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA, 0.65f));
+            material.set(new DepthTestAttribute(GL20.GL_LEQUAL, false));
+        } else {
+            material.set(new DepthTestAttribute(GL20.GL_LEQUAL, true));
         }
         return material;
     }
@@ -293,6 +297,23 @@ public class BlockMeshBuilder {
 
     private boolean isOpaqueForVisibility(BlockRenderLayer renderLayer) {
         return renderLayer == BlockRenderLayer.SOLID;
+    }
+
+    private boolean isFaceVisible(int blockType, BlockRenderLayer renderLayer, int neighborBlockType) {
+        if (neighborBlockType < 0) {
+            return true;
+        }
+
+        BlockRenderLayer neighborLayer = getRenderLayer(neighborBlockType);
+        if (neighborLayer == BlockRenderLayer.SOLID) {
+            return false;
+        }
+
+        // Water-like blocks should not draw internal faces against the same transparent volume,
+        // but they also must not hide solid terrain faces behind them.
+        return renderLayer != BlockRenderLayer.TRANSLUCENT
+            || neighborLayer != BlockRenderLayer.TRANSLUCENT
+            || neighborBlockType != blockType;
     }
 
     private void createMergedFaceWithRepeatingUV(

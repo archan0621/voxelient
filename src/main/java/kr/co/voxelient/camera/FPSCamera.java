@@ -8,13 +8,17 @@ import com.badlogic.gdx.math.Vector3;
  * First-person camera with yaw/pitch control.
  */
 public class FPSCamera {
+    private static final float DEFAULT_NEAR = 0.05f;
+    private static final float MIN_NEAR = 0.01f;
+    private static final float MIN_FAR_DISTANCE = 1f;
+
     private final PerspectiveCamera camera;
     private float yaw;
     private float pitch;
 
     public FPSCamera(float fieldOfView, int width, int height) {
         camera = new PerspectiveCamera(fieldOfView, width, height);
-        camera.near = 0.1f;
+        camera.near = DEFAULT_NEAR;
         camera.far = 100f;
         yaw = -90f;
         pitch = 0f;
@@ -79,8 +83,15 @@ public class FPSCamera {
         camera.update();
     }
 
+    public void setNear(float near) {
+        float safeNear = Float.isFinite(near) ? near : DEFAULT_NEAR;
+        camera.near = MathUtils.clamp(safeNear, MIN_NEAR, camera.far - MIN_FAR_DISTANCE);
+        camera.update();
+    }
+
     public void setFar(float far) {
-        camera.far = far;
+        float safeFar = Float.isFinite(far) ? far : 100f;
+        camera.far = Math.max(camera.near + MIN_FAR_DISTANCE, safeFar);
         camera.update();
     }
 

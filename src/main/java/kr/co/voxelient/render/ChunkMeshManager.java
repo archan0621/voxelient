@@ -2,6 +2,7 @@ package kr.co.voxelient.render;
 
 import com.badlogic.gdx.graphics.Camera;
 import com.badlogic.gdx.graphics.g3d.ModelInstance;
+import com.badlogic.gdx.math.collision.BoundingBox;
 import kr.co.voxelite.world.BlockManager;
 import kr.co.voxelite.world.BlockRenderLayer;
 import kr.co.voxelite.world.Chunk;
@@ -111,13 +112,14 @@ public class ChunkMeshManager {
 
     public List<ModelInstance> getVisibleInstances(Camera camera, BlockRenderLayer renderLayer) {
         ChunkManager chunkManager = world.getChunkManager();
-        List<ModelInstance> visibleInstances = new ArrayList<>(meshes.size());
+        List<LayerInstance> visibleInstances = new ArrayList<>(meshes.size());
         if (chunkManager == null) {
-            return visibleInstances;
+            return List.of();
         }
 
-        Set<RenderSectionKey> traversableSections = camera != null
-            ? getCachedTraversableSections(camera, chunkManager)
+        RenderSectionKey cameraSection = getCameraSection(camera);
+        Set<RenderSectionKey> traversableSections = cameraSection != null
+            ? getCachedTraversableSections(cameraSection, chunkManager)
             : null;
 
         for (Map.Entry<RenderSectionKey, ChunkMesh> entry : meshes.entrySet()) {
@@ -126,7 +128,9 @@ public class ChunkMeshManager {
             if (chunk == null || !chunk.isGenerated() || !chunkManager.isChunkVisible(key.chunkCoord())) {
                 continue;
             }
-            if (traversableSections != null && !traversableSections.contains(key)) {
+            if (traversableSections != null
+                && !traversableSections.contains(key)
+                && !isNearCameraSection(key, cameraSection)) {
                 continue;
             }
 
@@ -135,11 +139,25 @@ public class ChunkMeshManager {
                 continue;
             }
 
-            if (camera == null || camera.frustum.boundsInFrustum(mesh.getBounds())) {
-                visibleInstances.add(mesh.getInstance(renderLayer));
+            boolean nearCameraSection = isNearCameraSection(key, cameraSection);
+            if (camera == null || nearCameraSection || camera.frustum.boundsInFrustum(mesh.getBounds())) {
+                visibleInstances.add(new LayerInstance(mesh.getInstance(renderLayer), mesh.getBounds()));
             }
         }
-        return visibleInstances;
+
+        if (renderLayer == BlockRenderLayer.TRANSLUCENT && camera != null) {
+            visibleInstances = TranslucentRenderOrder.backToFront(
+                camera,
+                visibleInstances,
+                LayerInstance::bounds
+            );
+        }
+
+        List<ModelInstance> instances = new ArrayList<>(visibleInstances.size());
+        for (LayerInstance visibleInstance : visibleInstances) {
+            instances.add(visibleInstance.instance());
+        }
+        return instances;
     }
 
     public void dispose() {
@@ -299,8 +317,7 @@ public class ChunkMeshManager {
         }
     }
 
-    private Set<RenderSectionKey> getCachedTraversableSections(Camera camera, ChunkManager chunkManager) {
-        RenderSectionKey start = getCameraSection(camera);
+    private Set<RenderSectionKey> getCachedTraversableSections(RenderSectionKey start, ChunkManager chunkManager) {
         if (start == null || !isTraversable(start, chunkManager)) {
             return null;
         }
@@ -389,6 +406,19 @@ public class ChunkMeshManager {
         );
     }
 
+    private boolean isNearCameraSection(RenderSectionKey key, RenderSectionKey cameraSection) {
+        if (key == null || cameraSection == null) {
+            return false;
+        }
+
+        ChunkCoord coord = key.chunkCoord();
+        ChunkCoord cameraCoord = cameraSection.chunkCoord();
+        int dx = Math.abs(coord.x - cameraCoord.x);
+        int dz = Math.abs(coord.z - cameraCoord.z);
+        int dy = Math.abs(key.sectionY() - cameraSection.sectionY());
+        return dx <= 1 && dz <= 1 && dy <= 1;
+    }
+
     private boolean isTraversable(RenderSectionKey key, ChunkManager chunkManager) {
         Chunk chunk = chunkManager.getChunk(key.chunkCoord());
         return chunk != null
@@ -404,5 +434,8 @@ public class ChunkMeshManager {
     }
 
     private record TraversalState(RenderSectionKey key, SectionFace entryFace) {
+    }
+
+    private record LayerInstance(ModelInstance instance, BoundingBox bounds) {
     }
 }

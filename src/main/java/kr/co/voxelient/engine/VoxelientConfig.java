@@ -11,6 +11,7 @@ public class VoxelientConfig {
     public BlockManager.IBlockRenderLayerProvider renderLayerProvider = null;
     public float fieldOfView = 67f;
     public float initialPitch = -20f;
+    public float cameraNear = 0.05f;
     public float cameraFar = 160f;
     public float fogStartRatio = 0.78f;
     public float fogEndRatio = 0.94f;
@@ -48,6 +49,11 @@ public class VoxelientConfig {
 
         public Builder cameraPitch(float pitch) {
             config.initialPitch = pitch;
+            return this;
+        }
+
+        public Builder cameraNear(float near) {
+            config.cameraNear = near;
             return this;
         }
 

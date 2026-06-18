@@ -92,6 +92,40 @@ class BlockMeshBuilderAsyncCompileTest {
         assertTrue(section.mergedQuads().stream().anyMatch(quad -> quad.renderLayer == BlockRenderLayer.TRANSLUCENT));
     }
 
+    @Test
+    void prepareSectionBuildInputs_ShouldKeepSolidFacesNextToTranslucentBlocks() {
+        ChunkManager chunkManager = createChunkManager();
+        Chunk chunk = new Chunk(new ChunkCoord(0, 0));
+        chunk.addBlockLocal(0, 0f, 0, 1);
+        chunk.addBlockLocal(1, 0f, 0, 6);
+        chunk.markAsGenerated();
+        chunkManager.replaceChunk(chunk);
+
+        BlockMeshBuilder builder = new BlockMeshBuilder(
+            null,
+            null,
+            blockType -> blockType == 6 ? BlockRenderLayer.TRANSLUCENT : BlockRenderLayer.SOLID
+        );
+        Map<RenderSectionKey, BlockMeshBuilder.SectionBuildInput> inputs =
+            builder.prepareSectionBuildInputs(chunk, chunkManager, Set.of(0));
+        Map<RenderSectionKey, BlockMeshBuilder.CompiledSectionMesh> compiled =
+            builder.compileSectionMeshes(inputs);
+
+        BlockMeshBuilder.CompiledSectionMesh section =
+            compiled.get(new RenderSectionKey(new ChunkCoord(0, 0), 0));
+
+        assertTrue(section.mergedQuads().stream().anyMatch(quad ->
+            quad.renderLayer == BlockRenderLayer.SOLID
+                && quad.blockType == 1
+                && quad.direction == 3
+        ));
+        assertFalse(section.mergedQuads().stream().anyMatch(quad ->
+            quad.renderLayer == BlockRenderLayer.TRANSLUCENT
+                && quad.blockType == 6
+                && quad.direction == 2
+        ));
+    }
+
     private ChunkManager createChunkManager() {
         IChunkGenerator generator = (chunk, blockType) -> {
         };
