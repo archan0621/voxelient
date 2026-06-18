@@ -15,6 +15,7 @@ public class ChunkMesh {
     private final Map<BlockRenderLayer, Model> models = new EnumMap<>(BlockRenderLayer.class);
     private final Map<BlockRenderLayer, ModelInstance> instances = new EnumMap<>(BlockRenderLayer.class);
     private BoundingBox bounds;
+    private SectionVisibility visibility = SectionVisibility.allVisible();
 
     public void setModel(Model model) {
         setModel(BlockRenderLayer.SOLID, model);
@@ -50,6 +51,14 @@ public class ChunkMesh {
 
     public BoundingBox getBounds() {
         return bounds;
+    }
+
+    public void setVisibility(SectionVisibility visibility) {
+        this.visibility = visibility != null ? visibility : SectionVisibility.allVisible();
+    }
+
+    public SectionVisibility getVisibility() {
+        return visibility;
     }
 
     public boolean hasInstance() {

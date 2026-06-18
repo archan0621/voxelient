@@ -104,6 +104,13 @@ public class BlockMeshBuilder {
                 continue;
             }
 
+            BlockRenderLayer renderLayer = getRenderLayer(block.blockType);
+            SectionBuildAccumulator accumulator = sectionData.get(sectionY);
+            if (isOpaqueForVisibility(renderLayer)) {
+                int localYInSection = block.pos.y() - sectionY * Chunk.RENDER_SECTION_HEIGHT;
+                accumulator.visibilityGraph.setOpaque(block.pos.x(), localYInSection, block.pos.z());
+            }
+
             boolean[] visibleFaces = new boolean[6];
             visibleFaces[0] = !chunkManager.hasBlockAt(pos.x, pos.y, pos.z + 1);
             visibleFaces[1] = !chunkManager.hasBlockAt(pos.x, pos.y, pos.z - 1);
@@ -120,8 +127,6 @@ public class BlockMeshBuilder {
 
             Vector3 copiedPos = new Vector3(pos);
             boolean[] copiedVisibleFaces = visibleFaces.clone();
-            BlockRenderLayer renderLayer = getRenderLayer(block.blockType);
-            SectionBuildAccumulator accumulator = sectionData.get(sectionY);
             accumulator.blocks.add(new BlockData(copiedPos, block.blockType, copiedVisibleFaces, renderLayer));
             accumulator.visibleFacesMap.put(copiedPos, copiedVisibleFaces);
         }
@@ -135,7 +140,8 @@ public class BlockMeshBuilder {
                 key,
                 List.copyOf(accumulator.blocks),
                 Map.copyOf(accumulator.visibleFacesMap),
-                new BoundingBox(accumulator.bounds.min.cpy(), accumulator.bounds.max.cpy())
+                new BoundingBox(accumulator.bounds.min.cpy(), accumulator.bounds.max.cpy()),
+                accumulator.visibilityGraph.computeVisibility()
             ));
         }
 
@@ -159,7 +165,8 @@ public class BlockMeshBuilder {
             compiledSections.put(entry.getKey(), new CompiledSectionMesh(
                 entry.getKey(),
                 List.copyOf(mergedQuads),
-                new BoundingBox(input.bounds().min.cpy(), input.bounds().max.cpy())
+                new BoundingBox(input.bounds().min.cpy(), input.bounds().max.cpy()),
+                input.visibility()
             ));
         }
         return compiledSections;
@@ -191,6 +198,7 @@ public class BlockMeshBuilder {
 
         ChunkMesh mesh = new ChunkMesh();
         mesh.setBounds(compiledSection.bounds());
+        mesh.setVisibility(compiledSection.visibility());
         for (Map.Entry<BlockRenderLayer, List<GreedyMeshBuilder.MergedQuad>> entry : quadsByLayer.entrySet()) {
             mesh.setModel(entry.getKey(), buildLayerModel(entry.getKey(), entry.getValue()));
         }
@@ -281,6 +289,10 @@ public class BlockMeshBuilder {
             }
         }
         return BlockRenderLayer.SOLID;
+    }
+
+    private boolean isOpaqueForVisibility(BlockRenderLayer renderLayer) {
+        return renderLayer == BlockRenderLayer.SOLID;
     }
 
     private void createMergedFaceWithRepeatingUV(
@@ -440,20 +452,23 @@ public class BlockMeshBuilder {
         RenderSectionKey key,
         List<BlockData> blocks,
         Map<Vector3, boolean[]> visibleFacesMap,
-        BoundingBox bounds
+        BoundingBox bounds,
+        SectionVisibility visibility
     ) {
     }
 
     public record CompiledSectionMesh(
         RenderSectionKey key,
         List<GreedyMeshBuilder.MergedQuad> mergedQuads,
-        BoundingBox bounds
+        BoundingBox bounds,
+        SectionVisibility visibility
     ) {
     }
 
     private static class SectionBuildAccumulator {
         private final List<BlockData> blocks = new ArrayList<>();
         private final Map<Vector3, boolean[]> visibleFacesMap = new HashMap<>();
+        private final SectionVisibilityGraph visibilityGraph = new SectionVisibilityGraph();
         private final BoundingBox bounds;
 
         private SectionBuildAccumulator(BoundingBox bounds) {

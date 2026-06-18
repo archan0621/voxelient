@@ -10,6 +10,7 @@ import kr.co.voxelite.world.ChunkManager;
 import kr.co.voxelite.world.RenderSectionKey;
 import kr.co.voxelite.world.World;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.HashMap;
@@ -29,14 +30,20 @@ import java.util.concurrent.TimeUnit;
  */
 public class ChunkMeshManager {
     private static final int MAX_IN_FLIGHT_COMPILES = 8;
+    private static final SectionVisibility DEFAULT_VISIBILITY = SectionVisibility.allVisible();
 
     private final World world;
     private final BlockMeshBuilder meshBuilder;
     private final Map<RenderSectionKey, ChunkMesh> meshes = new HashMap<>();
+    private final Map<RenderSectionKey, SectionVisibility> sectionVisibility = new HashMap<>();
     private final Map<RenderSectionKey, Integer> buildVersions = new HashMap<>();
     private final Queue<CompileBatchResult> completedCompiles = new ConcurrentLinkedQueue<>();
     private final ExecutorService compileExecutor = Executors.newFixedThreadPool(2);
     private int inFlightCompiles = 0;
+    private int visibilityRevision = 0;
+    private int cachedTraversalRevision = -1;
+    private RenderSectionKey cachedTraversalStart = null;
+    private Set<RenderSectionKey> cachedTraversableSections = null;
 
     public ChunkMeshManager(
         World world,
@@ -109,12 +116,17 @@ public class ChunkMeshManager {
             return visibleInstances;
         }
 
-        sweepStaleMeshes();
+        Set<RenderSectionKey> traversableSections = camera != null
+            ? getCachedTraversableSections(camera, chunkManager)
+            : null;
 
         for (Map.Entry<RenderSectionKey, ChunkMesh> entry : meshes.entrySet()) {
             RenderSectionKey key = entry.getKey();
             Chunk chunk = chunkManager.getChunk(key.chunkCoord());
             if (chunk == null || !chunk.isGenerated() || !chunkManager.isChunkVisible(key.chunkCoord())) {
+                continue;
+            }
+            if (traversableSections != null && !traversableSections.contains(key)) {
                 continue;
             }
 
@@ -145,10 +157,12 @@ public class ChunkMeshManager {
             mesh.dispose();
         }
         meshes.clear();
+        sectionVisibility.clear();
         buildVersions.clear();
         completedCompiles.clear();
         meshBuilder.dispose();
         inFlightCompiles = 0;
+        invalidateTraversalCache();
     }
 
     private void sweepStaleMeshes() {
@@ -159,19 +173,31 @@ public class ChunkMeshManager {
         }
 
         Iterator<Map.Entry<RenderSectionKey, ChunkMesh>> iterator = meshes.entrySet().iterator();
+        boolean removedMesh = false;
         while (iterator.hasNext()) {
             Map.Entry<RenderSectionKey, ChunkMesh> entry = iterator.next();
             Chunk chunk = chunkManager.getChunk(entry.getKey().chunkCoord());
             if (chunk == null || !chunk.isGenerated()) {
                 entry.getValue().dispose();
+                sectionVisibility.remove(entry.getKey());
                 buildVersions.remove(entry.getKey());
                 iterator.remove();
+                removedMesh = true;
             }
+        }
+
+        boolean removedVisibility = sectionVisibility.keySet().removeIf(key -> {
+            Chunk chunk = chunkManager.getChunk(key.chunkCoord());
+            return chunk == null || !chunk.isGenerated();
+        });
+        if (removedMesh || removedVisibility) {
+            invalidateTraversalCache();
         }
     }
 
     private void disposeChunkMeshes(ChunkCoord coord) {
         Iterator<Map.Entry<RenderSectionKey, ChunkMesh>> iterator = meshes.entrySet().iterator();
+        boolean removedMesh = false;
         while (iterator.hasNext()) {
             Map.Entry<RenderSectionKey, ChunkMesh> entry = iterator.next();
             if (!entry.getKey().chunkCoord().equals(coord)) {
@@ -179,8 +205,15 @@ public class ChunkMeshManager {
             }
 
             entry.getValue().dispose();
+            sectionVisibility.remove(entry.getKey());
             buildVersions.remove(entry.getKey());
             iterator.remove();
+            removedMesh = true;
+        }
+
+        boolean removedVisibility = sectionVisibility.keySet().removeIf(key -> key.chunkCoord().equals(coord));
+        if (removedMesh || removedVisibility) {
+            invalidateTraversalCache();
         }
     }
 
@@ -241,12 +274,24 @@ public class ChunkMeshManager {
                 Chunk chunk = chunkManager.getChunk(key.chunkCoord());
                 if (chunk == null || !chunk.isGenerated()) {
                     disposeSectionMesh(key);
+                    sectionVisibility.remove(key);
                     buildVersions.remove(key);
+                    invalidateTraversalCache();
                     continue;
                 }
 
+                BlockMeshBuilder.CompiledSectionMesh compiledSection = result.compiledSections().get(key);
+                if (compiledSection == null) {
+                    disposeSectionMesh(key);
+                    sectionVisibility.remove(key);
+                    invalidateTraversalCache();
+                    continue;
+                }
+
+                sectionVisibility.put(key, compiledSection.visibility());
+                invalidateTraversalCache();
                 disposeSectionMesh(key);
-                ChunkMesh mesh = meshBuilder.buildCompiledChunkMesh(result.compiledSections().get(key));
+                ChunkMesh mesh = meshBuilder.buildCompiledChunkMesh(compiledSection);
                 if (mesh != null) {
                     meshes.put(key, mesh);
                 }
@@ -254,9 +299,110 @@ public class ChunkMeshManager {
         }
     }
 
+    private Set<RenderSectionKey> getCachedTraversableSections(Camera camera, ChunkManager chunkManager) {
+        RenderSectionKey start = getCameraSection(camera);
+        if (start == null || !isTraversable(start, chunkManager)) {
+            return null;
+        }
+
+        if (start.equals(cachedTraversalStart) && cachedTraversalRevision == visibilityRevision) {
+            return cachedTraversableSections;
+        }
+
+        if (inFlightCompiles > 0) {
+            return null;
+        }
+
+        cachedTraversalStart = start;
+        cachedTraversalRevision = visibilityRevision;
+        cachedTraversableSections = collectTraversableSections(start, chunkManager);
+        return cachedTraversableSections;
+    }
+
+    private void invalidateTraversalCache() {
+        visibilityRevision++;
+        cachedTraversalRevision = -1;
+        cachedTraversalStart = null;
+        cachedTraversableSections = null;
+    }
+
+    private Set<RenderSectionKey> collectTraversableSections(RenderSectionKey start, ChunkManager chunkManager) {
+        Set<TraversalState> visitedStates = new HashSet<>();
+        Set<RenderSectionKey> visibleSections = new HashSet<>();
+        ArrayDeque<TraversalState> queue = new ArrayDeque<>();
+        TraversalState startState = new TraversalState(start, null);
+        visitedStates.add(startState);
+        queue.add(startState);
+
+        while (!queue.isEmpty()) {
+            TraversalState state = queue.removeFirst();
+            visibleSections.add(state.key());
+
+            SectionVisibility visibility = sectionVisibility.getOrDefault(
+                state.key(),
+                DEFAULT_VISIBILITY
+            );
+            for (SectionFace exitFace : SectionFace.values()) {
+                if (state.entryFace() != null && !visibility.isVisible(state.entryFace(), exitFace)) {
+                    continue;
+                }
+
+                RenderSectionKey next = offset(state.key(), exitFace);
+                if (next == null || !isTraversable(next, chunkManager)) {
+                    continue;
+                }
+
+                TraversalState nextState = new TraversalState(next, exitFace.opposite());
+                if (visitedStates.add(nextState)) {
+                    queue.add(nextState);
+                }
+            }
+        }
+        return visibleSections;
+    }
+
+    private RenderSectionKey getCameraSection(Camera camera) {
+        if (camera == null || camera.position == null) {
+            return null;
+        }
+        int sectionY = Chunk.getRenderSectionIndex((int) Math.floor(camera.position.y));
+        if (!Chunk.isValidRenderSectionIndex(sectionY)) {
+            return null;
+        }
+
+        return new RenderSectionKey(
+            ChunkCoord.fromWorldPos(camera.position.x, camera.position.z, Chunk.CHUNK_SIZE),
+            sectionY
+        );
+    }
+
+    private RenderSectionKey offset(RenderSectionKey key, SectionFace face) {
+        int sectionY = key.sectionY() + face.dy;
+        if (!Chunk.isValidRenderSectionIndex(sectionY)) {
+            return null;
+        }
+
+        ChunkCoord coord = key.chunkCoord();
+        return new RenderSectionKey(
+            new ChunkCoord(coord.x + face.dx, coord.z + face.dz),
+            sectionY
+        );
+    }
+
+    private boolean isTraversable(RenderSectionKey key, ChunkManager chunkManager) {
+        Chunk chunk = chunkManager.getChunk(key.chunkCoord());
+        return chunk != null
+            && chunk.isGenerated()
+            && chunkManager.isChunkVisible(key.chunkCoord())
+            && Chunk.isValidRenderSectionIndex(key.sectionY());
+    }
+
     private record CompileBatchResult(
         Map<RenderSectionKey, Integer> versions,
         Map<RenderSectionKey, BlockMeshBuilder.CompiledSectionMesh> compiledSections
     ) {
+    }
+
+    private record TraversalState(RenderSectionKey key, SectionFace entryFace) {
     }
 }
