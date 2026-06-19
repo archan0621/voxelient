@@ -42,6 +42,7 @@ public class ChunkMeshManager {
     private final Map<RenderSectionKey, ChunkMesh> meshes = new HashMap<>();
     private final Map<RenderSectionKey, SectionVisibility> sectionVisibility = new HashMap<>();
     private final Map<RenderSectionKey, Integer> buildVersions = new HashMap<>();
+    private final Map<ChunkCoord, Set<Integer>> deferredDirtySectionsByChunk = new HashMap<>();
     private final Queue<CompileBatchResult> completedCompiles = new ConcurrentLinkedQueue<>();
     private final Queue<CompiledSectionApplication> pendingMeshApplications = new ConcurrentLinkedQueue<>();
     private final ExecutorService compileExecutor = Executors.newFixedThreadPool(2);
@@ -89,28 +90,50 @@ public class ChunkMeshManager {
         );
         if (!compileThrottled && availableCompileSlots > 0) {
             Map<ChunkCoord, Set<Integer>> dirtySectionsByChunk = new LinkedHashMap<>();
-            while (selectedChunks < availableCompileSlots) {
+            selectedChunks += drainVisibleDeferredSections(
+                dirtySectionsByChunk,
+                chunkManager,
+                availableCompileSlots
+            );
+
+            int polledChunks = 0;
+            while (selectedChunks < availableCompileSlots && polledChunks < availableCompileSlots) {
                 RenderSectionKey key = chunkManager.pollDirtySection();
                 if (key == null) {
                     break;
                 }
 
                 ChunkCoord coord = key.chunkCoord();
-                Set<Integer> sections = dirtySectionsByChunk.get(coord);
-                if (sections == null) {
-                    sections = new HashSet<>();
-                    dirtySectionsByChunk.put(coord, sections);
-                    selectedChunks++;
-                }
-
+                Set<Integer> sections = new HashSet<>();
                 sections.add(key.sectionY());
                 sections.addAll(chunkManager.drainDirtySections(coord));
+                polledChunks++;
+
+                Chunk chunk = chunkManager.getChunk(coord);
+                if (chunk == null || !chunk.isGenerated()) {
+                    removeDeferredSections(coord);
+                    disposeChunkMeshes(coord);
+                    continue;
+                }
+                if (!chunkManager.isChunkVisible(coord)) {
+                    deferDirtySections(coord, sections);
+                    disposeChunkMeshes(coord);
+                    continue;
+                }
+
+                dirtySectionsByChunk.put(coord, sections);
+                selectedChunks++;
             }
 
             for (Map.Entry<ChunkCoord, Set<Integer>> entry : dirtySectionsByChunk.entrySet()) {
                 ChunkCoord coord = entry.getKey();
                 Chunk chunk = chunkManager.getChunk(coord);
-                if (chunk == null || !chunk.isGenerated()) {
+                if (chunk == null || !chunk.isGenerated() || !chunkManager.isChunkVisible(coord)) {
+                    if (chunk != null && chunk.isGenerated()) {
+                        deferDirtySections(coord, entry.getValue());
+                    } else {
+                        removeDeferredSections(coord);
+                    }
                     disposeChunkMeshes(coord);
                     continue;
                 }
@@ -127,6 +150,8 @@ public class ChunkMeshManager {
             inFlightCompiles,
             completedBatches,
             pendingMeshApplications.size(),
+            deferredDirtySectionsByChunk.size(),
+            countDeferredDirtySections(),
             selectedChunks,
             queuedCompileBatches,
             applySummary.applied(),
@@ -205,6 +230,15 @@ public class ChunkMeshManager {
             disposeSectionMesh(key);
             sectionVisibility.remove(key);
             buildVersions.remove(key);
+            removeDeferredSections(key.chunkCoord());
+            invalidateTraversalCache();
+            return false;
+        }
+        if (!chunkManager.isChunkVisible(key.chunkCoord())) {
+            disposeSectionMesh(key);
+            sectionVisibility.remove(key);
+            buildVersions.remove(key);
+            deferDirtySection(key);
             invalidateTraversalCache();
             return false;
         }
@@ -239,18 +273,25 @@ public class ChunkMeshManager {
         while (iterator.hasNext()) {
             Map.Entry<RenderSectionKey, ChunkMesh> entry = iterator.next();
             Chunk chunk = chunkManager.getChunk(entry.getKey().chunkCoord());
-            if (chunk == null || !chunk.isGenerated()) {
+            boolean missing = chunk == null || !chunk.isGenerated();
+            boolean invisible = !missing && !chunkManager.isChunkVisible(entry.getKey().chunkCoord());
+            if (missing || invisible) {
                 entry.getValue().dispose();
                 sectionVisibility.remove(entry.getKey());
                 buildVersions.remove(entry.getKey());
                 iterator.remove();
+                if (invisible) {
+                    deferDirtySection(entry.getKey());
+                } else {
+                    removeDeferredSections(entry.getKey().chunkCoord());
+                }
                 removedMesh = true;
             }
         }
 
         boolean removedVisibility = sectionVisibility.keySet().removeIf(key -> {
             Chunk chunk = chunkManager.getChunk(key.chunkCoord());
-            return chunk == null || !chunk.isGenerated();
+            return chunk == null || !chunk.isGenerated() || !chunkManager.isChunkVisible(key.chunkCoord());
         });
         if (removedMesh || removedVisibility) {
             invalidateTraversalCache();
@@ -332,6 +373,7 @@ public class ChunkMeshManager {
         meshes.clear();
         sectionVisibility.clear();
         buildVersions.clear();
+        deferredDirtySectionsByChunk.clear();
         completedCompiles.clear();
         pendingMeshApplications.clear();
         stats = ChunkMeshStats.empty();
@@ -360,6 +402,72 @@ public class ChunkMeshManager {
         if (removedMesh || removedVisibility) {
             invalidateTraversalCache();
         }
+    }
+
+    private int drainVisibleDeferredSections(
+        Map<ChunkCoord, Set<Integer>> target,
+        ChunkManager chunkManager,
+        int maxChunks
+    ) {
+        if (deferredDirtySectionsByChunk.isEmpty() || maxChunks <= 0) {
+            return 0;
+        }
+
+        int drained = 0;
+        Iterator<Map.Entry<ChunkCoord, Set<Integer>>> iterator = deferredDirtySectionsByChunk.entrySet().iterator();
+        while (iterator.hasNext() && drained < maxChunks) {
+            Map.Entry<ChunkCoord, Set<Integer>> entry = iterator.next();
+            ChunkCoord coord = entry.getKey();
+            Chunk chunk = chunkManager.getChunk(coord);
+            if (chunk == null || !chunk.isGenerated()) {
+                iterator.remove();
+                continue;
+            }
+            if (!chunkManager.isChunkVisible(coord)) {
+                continue;
+            }
+
+            target.put(coord, new HashSet<>(entry.getValue()));
+            iterator.remove();
+            drained++;
+        }
+        return drained;
+    }
+
+    private void deferDirtySection(RenderSectionKey key) {
+        if (key != null) {
+            deferDirtySections(key.chunkCoord(), Set.of(key.sectionY()));
+        }
+    }
+
+    private void deferDirtySections(ChunkCoord coord, Set<Integer> sections) {
+        if (coord == null || sections == null || sections.isEmpty()) {
+            return;
+        }
+
+        Set<Integer> deferredSections = deferredDirtySectionsByChunk.computeIfAbsent(coord, ignored -> new HashSet<>());
+        for (Integer sectionY : sections) {
+            if (sectionY != null && Chunk.isValidRenderSectionIndex(sectionY)) {
+                deferredSections.add(sectionY);
+            }
+        }
+        if (deferredSections.isEmpty()) {
+            deferredDirtySectionsByChunk.remove(coord);
+        }
+    }
+
+    private void removeDeferredSections(ChunkCoord coord) {
+        if (coord != null) {
+            deferredDirtySectionsByChunk.remove(coord);
+        }
+    }
+
+    private int countDeferredDirtySections() {
+        int count = 0;
+        for (Set<Integer> sections : deferredDirtySectionsByChunk.values()) {
+            count += sections.size();
+        }
+        return count;
     }
 
     private boolean enqueueChunkSectionsCompile(ChunkCoord coord, Set<Integer> sections, Chunk chunk, ChunkManager chunkManager) {

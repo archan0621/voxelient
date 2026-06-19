@@ -50,10 +50,11 @@ public class HudRenderer {
             ), x, y);
             y -= 25f;
             font.draw(batch, String.format(
-                "Build: inFlight=%d pending=%d queued=%d%s",
+                "Build: inFlight=%d pending=%d queued=%d deferred=%d%s",
                 stats.inFlightCompiles(),
                 stats.pendingMeshApplications(),
                 stats.queuedCompileBatches(),
+                stats.deferredDirtySections(),
                 stats.compileThrottled() ? " throttled" : ""
             ), x, y);
         }

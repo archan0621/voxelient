@@ -9,6 +9,8 @@ public record ChunkMeshStats(
     int inFlightCompiles,
     int completedCompileBatches,
     int pendingMeshApplications,
+    int deferredDirtyChunks,
+    int deferredDirtySections,
     int selectedDirtyChunks,
     int queuedCompileBatches,
     int appliedMeshSections,
@@ -17,6 +19,6 @@ public record ChunkMeshStats(
     boolean compileThrottled
 ) {
     public static ChunkMeshStats empty() {
-        return new ChunkMeshStats(0, 0, 0, 0, 0, 0, 0, 0, 0, 0L, false);
+        return new ChunkMeshStats(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0L, false);
     }
 }
