@@ -23,6 +23,10 @@ public class HudRenderer {
     }
 
     public void render(Vector3 playerPos, int screenWidth, int screenHeight) {
+        render(playerPos, screenWidth, screenHeight, null);
+    }
+
+    public void render(Vector3 playerPos, int screenWidth, int screenHeight, ChunkMeshStats stats) {
         ChunkCoord chunkCoord = ChunkCoord.fromWorldPos(playerPos.x, playerPos.z, Chunk.CHUNK_SIZE);
         int blockX = (int) Math.floor(playerPos.x);
         int blockY = (int) Math.floor(playerPos.y);
@@ -36,6 +40,23 @@ public class HudRenderer {
         font.draw(batch, String.format("Chunk: (%d, %d)", chunkCoord.x, chunkCoord.z), x, y);
         y -= 25f;
         font.draw(batch, String.format("FPS: %d", Gdx.graphics.getFramesPerSecond()), x, y);
+        if (stats != null) {
+            y -= 25f;
+            font.draw(batch, String.format(
+                "Sections: cached=%d apply=%d/%dms",
+                stats.meshSections(),
+                stats.appliedMeshSections(),
+                stats.meshApplyMs()
+            ), x, y);
+            y -= 25f;
+            font.draw(batch, String.format(
+                "Build: inFlight=%d pending=%d queued=%d%s",
+                stats.inFlightCompiles(),
+                stats.pendingMeshApplications(),
+                stats.queuedCompileBatches(),
+                stats.compileThrottled() ? " throttled" : ""
+            ), x, y);
+        }
         batch.end();
     }
 

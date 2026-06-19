@@ -64,7 +64,7 @@ public class VoxelientEngine {
             config.textureProvider,
             config.renderLayerProvider
         );
-        renderer = new Renderer(screenWidth, screenHeight, config.fogStartRatio, config.fogEndRatio);
+        renderer = new Renderer(screenWidth, screenHeight, config.fogStartRatio, config.fogEndRatio, config.showRenderStats);
         initialized = true;
     }
 
@@ -77,7 +77,11 @@ public class VoxelientEngine {
         if (config.updateCoreEngine) {
             coreEngine.update(safeDelta);
         }
-        chunkMeshManager.processDirtyChunks(config.chunkMeshBuildPerFrame);
+        chunkMeshManager.processDirtyChunks(
+            config.chunkMeshBuildPerFrame,
+            config.chunkMeshApplyPerFrame,
+            config.chunkMeshApplyBudgetMs
+        );
         updateRaycast();
     }
 
@@ -224,6 +228,21 @@ public class VoxelientEngine {
 
         public Builder chunkMeshBuildPerFrame(int max) {
             configBuilder.chunkMeshBuildPerFrame(max);
+            return this;
+        }
+
+        public Builder chunkMeshApplyPerFrame(int max) {
+            configBuilder.chunkMeshApplyPerFrame(max);
+            return this;
+        }
+
+        public Builder chunkMeshApplyBudgetMs(long maxMillis) {
+            configBuilder.chunkMeshApplyBudgetMs(maxMillis);
+            return this;
+        }
+
+        public Builder showRenderStats(boolean showRenderStats) {
+            configBuilder.showRenderStats(showRenderStats);
             return this;
         }
 

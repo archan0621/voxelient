@@ -13,16 +13,22 @@ public class Renderer {
     private final CrosshairRenderer crosshairRenderer;
     private final BlockOutlineRenderer blockOutlineRenderer;
     private final HudRenderer hudRenderer;
+    private final boolean showRenderStats;
 
     public Renderer(int screenWidth, int screenHeight) {
         this(screenWidth, screenHeight, 0.78f, 0.94f);
     }
 
     public Renderer(int screenWidth, int screenHeight, float fogStartRatio, float fogEndRatio) {
+        this(screenWidth, screenHeight, fogStartRatio, fogEndRatio, false);
+    }
+
+    public Renderer(int screenWidth, int screenHeight, float fogStartRatio, float fogEndRatio, boolean showRenderStats) {
         blockRenderer = new BlockRenderer(fogStartRatio, fogEndRatio);
         crosshairRenderer = new CrosshairRenderer(screenWidth, screenHeight);
         blockOutlineRenderer = new BlockOutlineRenderer();
         hudRenderer = new HudRenderer();
+        this.showRenderStats = showRenderStats;
     }
 
     public void render(
@@ -47,7 +53,10 @@ public class Renderer {
         }
 
         crosshairRenderer.render(logicalWidth, logicalHeight);
-        hudRenderer.render(playerPos, logicalWidth, logicalHeight);
+        ChunkMeshStats stats = showRenderStats && chunkMeshManager != null
+            ? chunkMeshManager.getStats()
+            : null;
+        hudRenderer.render(playerPos, logicalWidth, logicalHeight, stats);
     }
 
     public void resize(int width, int height) {

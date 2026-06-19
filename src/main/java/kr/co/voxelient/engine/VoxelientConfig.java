@@ -18,6 +18,9 @@ public class VoxelientConfig {
     public float mouseSensitivity = 0.1f;
     public float playerMoveSpeed = 5f;
     public int chunkMeshBuildPerFrame = 2;
+    public int chunkMeshApplyPerFrame = 8;
+    public long chunkMeshApplyBudgetMs = 4L;
+    public boolean showRenderStats = false;
     public boolean updateCoreEngine = true;
 
     public static Builder builder() {
@@ -80,6 +83,21 @@ public class VoxelientConfig {
 
         public Builder chunkMeshBuildPerFrame(int max) {
             config.chunkMeshBuildPerFrame = max;
+            return this;
+        }
+
+        public Builder chunkMeshApplyPerFrame(int max) {
+            config.chunkMeshApplyPerFrame = max;
+            return this;
+        }
+
+        public Builder chunkMeshApplyBudgetMs(long maxMillis) {
+            config.chunkMeshApplyBudgetMs = maxMillis;
+            return this;
+        }
+
+        public Builder showRenderStats(boolean showRenderStats) {
+            config.showRenderStats = showRenderStats;
             return this;
         }
 
