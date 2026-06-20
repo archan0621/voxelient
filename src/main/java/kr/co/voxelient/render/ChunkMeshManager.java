@@ -43,15 +43,19 @@ public class ChunkMeshManager {
     private final Map<RenderSectionKey, SectionVisibility> sectionVisibility = new HashMap<>();
     private final Map<RenderSectionKey, Integer> buildVersions = new HashMap<>();
     private final Map<ChunkCoord, Set<Integer>> deferredDirtySectionsByChunk = new HashMap<>();
+    private final Map<Long, RenderCompileTask> activeCompileTasks = new HashMap<>();
     private final Queue<CompileBatchResult> completedCompiles = new ConcurrentLinkedQueue<>();
     private final Queue<CompiledSectionApplication> pendingMeshApplications = new ConcurrentLinkedQueue<>();
     private final ExecutorService compileExecutor = Executors.newFixedThreadPool(2);
+    private long nextCompileTaskId = 1L;
     private int inFlightCompiles = 0;
     private int visibilityRevision = 0;
     private int cachedTraversalRevision = -1;
     private RenderSectionKey cachedTraversalStart = null;
     private Set<RenderSectionKey> cachedTraversableSections = null;
     private ChunkMeshStats stats = ChunkMeshStats.empty();
+    private int frameCanceledCompileTasks = 0;
+    private int frameStaleCompileResults = 0;
 
     public ChunkMeshManager(
         World world,
@@ -72,12 +76,14 @@ public class ChunkMeshManager {
         if (chunkManager == null) {
             return;
         }
+        frameCanceledCompileTasks = 0;
+        frameStaleCompileResults = 0;
 
         MeshApplySummary applySummary = applyPendingMeshApplications(
             chunkManager,
             RenderFrameBudget.of(maxMeshApplicationsPerFrame, meshApplyBudgetMs)
         );
-        int completedBatches = drainCompletedCompiles(MAX_COMPLETED_BATCH_DRAINS_PER_FRAME);
+        int completedBatches = drainCompletedCompiles(MAX_COMPLETED_BATCH_DRAINS_PER_FRAME, chunkManager);
         sweepStaleMeshes();
 
         boolean compileThrottled = pendingMeshApplications.size() >= MAX_PENDING_MESH_APPLICATIONS
@@ -156,6 +162,8 @@ public class ChunkMeshManager {
             queuedCompileBatches,
             applySummary.applied(),
             applySummary.discarded(),
+            frameCanceledCompileTasks,
+            frameStaleCompileResults,
             applySummary.elapsedMs(),
             compileThrottled
         );
@@ -177,15 +185,32 @@ public class ChunkMeshManager {
         return inFlightCompiles;
     }
 
-    private int drainCompletedCompiles(int maxBatches) {
+    private int drainCompletedCompiles(int maxBatches, ChunkManager chunkManager) {
         int drained = 0;
         CompileBatchResult result;
         while (drained < maxBatches
             && pendingMeshApplications.size() < MAX_PENDING_MESH_APPLICATIONS
             && (result = completedCompiles.poll()) != null) {
-            inFlightCompiles = Math.max(0, inFlightCompiles - 1);
+            RenderCompileTask task = result.task();
+            finishCompileTask(task);
             drained++;
-            for (Map.Entry<RenderSectionKey, Integer> versionEntry : result.versions().entrySet()) {
+
+            if (task.isCanceled()) {
+                continue;
+            }
+            if (!isTaskRenderable(task, chunkManager)) {
+                task.cancel();
+                frameStaleCompileResults += task.sectionCount();
+                if (!isChunkGenerated(task.coord(), chunkManager)) {
+                    removeBuildVersions(task.versions().keySet());
+                    removeDeferredSections(task.coord());
+                } else if (!chunkManager.isChunkVisible(task.coord())) {
+                    deferDirtySections(task.coord(), task.sections());
+                }
+                continue;
+            }
+
+            for (Map.Entry<RenderSectionKey, Integer> versionEntry : task.versions().entrySet()) {
                 RenderSectionKey key = versionEntry.getKey();
                 pendingMeshApplications.offer(new CompiledSectionApplication(
                     key,
@@ -222,6 +247,7 @@ public class ChunkMeshManager {
         RenderSectionKey key = application.key();
         Integer expectedVersion = buildVersions.get(key);
         if (expectedVersion == null || !expectedVersion.equals(application.version())) {
+            frameStaleCompileResults++;
             return false;
         }
 
@@ -240,6 +266,7 @@ public class ChunkMeshManager {
             buildVersions.remove(key);
             deferDirtySection(key);
             invalidateTraversalCache();
+            frameStaleCompileResults++;
             return false;
         }
 
@@ -374,6 +401,7 @@ public class ChunkMeshManager {
         sectionVisibility.clear();
         buildVersions.clear();
         deferredDirtySectionsByChunk.clear();
+        activeCompileTasks.clear();
         completedCompiles.clear();
         pendingMeshApplications.clear();
         stats = ChunkMeshStats.empty();
@@ -383,6 +411,8 @@ public class ChunkMeshManager {
     }
 
     private void disposeChunkMeshes(ChunkCoord coord) {
+        cancelCompileTasks(coord);
+
         Iterator<Map.Entry<RenderSectionKey, ChunkMesh>> iterator = meshes.entrySet().iterator();
         boolean removedMesh = false;
         while (iterator.hasNext()) {
@@ -399,7 +429,8 @@ public class ChunkMeshManager {
         }
 
         boolean removedVisibility = sectionVisibility.keySet().removeIf(key -> key.chunkCoord().equals(coord));
-        if (removedMesh || removedVisibility) {
+        boolean removedBuildVersions = buildVersions.keySet().removeIf(key -> key.chunkCoord().equals(coord));
+        if (removedMesh || removedVisibility || removedBuildVersions) {
             invalidateTraversalCache();
         }
     }
@@ -488,23 +519,116 @@ public class ChunkMeshManager {
             versions.put(key, version);
         }
 
-        inFlightCompiles++;
+        cancelCompileTasksForSections(versions.keySet());
+        RenderCompileTask task = createCompileTask(coord, versions);
+        activeCompileTasks.put(task.id(), task);
+        inFlightCompiles = activeCompileTasks.size();
         try {
             compileExecutor.submit(() -> {
-                Map<RenderSectionKey, BlockMeshBuilder.CompiledSectionMesh> compiledSections;
-                try {
-                    compiledSections = meshBuilder.compileSectionMeshes(sectionInputs);
-                } catch (Exception e) {
-                    e.printStackTrace();
-                    compiledSections = Map.of();
-                }
-                completedCompiles.offer(new CompileBatchResult(Map.copyOf(versions), Map.copyOf(compiledSections)));
+                completedCompiles.offer(runCompileTask(task, sectionInputs, chunkManager));
             });
         } catch (RuntimeException e) {
-            inFlightCompiles = Math.max(0, inFlightCompiles - 1);
+            activeCompileTasks.remove(task.id());
+            inFlightCompiles = activeCompileTasks.size();
             throw e;
         }
         return true;
+    }
+
+    private CompileBatchResult runCompileTask(
+        RenderCompileTask task,
+        Map<RenderSectionKey, BlockMeshBuilder.SectionBuildInput> sectionInputs,
+        ChunkManager chunkManager
+    ) {
+        Map<RenderSectionKey, BlockMeshBuilder.CompiledSectionMesh> compiledSections = Map.of();
+        try {
+            if (!task.start() || !isChunkVisibleAndGenerated(task.coord(), chunkManager)) {
+                task.cancel();
+                return new CompileBatchResult(task, compiledSections);
+            }
+
+            compiledSections = meshBuilder.compileSectionMeshes(sectionInputs);
+            if (!task.isCanceled()) {
+                task.markUploading();
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            task.cancel();
+            compiledSections = Map.of();
+        }
+        return new CompileBatchResult(task, Map.copyOf(compiledSections));
+    }
+
+    private RenderCompileTask createCompileTask(ChunkCoord coord, Map<RenderSectionKey, Integer> versions) {
+        Set<Integer> sections = new HashSet<>();
+        for (RenderSectionKey key : versions.keySet()) {
+            sections.add(key.sectionY());
+        }
+        return new RenderCompileTask(nextCompileTaskId++, coord, Set.copyOf(sections), Map.copyOf(versions));
+    }
+
+    private void finishCompileTask(RenderCompileTask task) {
+        if (task != null && activeCompileTasks.remove(task.id()) != null) {
+            task.markDone();
+        }
+        inFlightCompiles = activeCompileTasks.size();
+    }
+
+    private void cancelCompileTasks(ChunkCoord coord) {
+        if (coord == null) {
+            return;
+        }
+        for (RenderCompileTask task : activeCompileTasks.values()) {
+            if (task.coord().equals(coord) && task.cancel()) {
+                frameCanceledCompileTasks++;
+            }
+        }
+    }
+
+    private void cancelCompileTasksForSections(Set<RenderSectionKey> keys) {
+        if (keys == null || keys.isEmpty()) {
+            return;
+        }
+        for (RenderCompileTask task : activeCompileTasks.values()) {
+            if (task.containsAny(keys) && task.cancel()) {
+                frameCanceledCompileTasks++;
+            }
+        }
+    }
+
+    private boolean isTaskRenderable(RenderCompileTask task, ChunkManager chunkManager) {
+        return task != null
+            && !task.isCanceled()
+            && isChunkVisibleAndGenerated(task.coord(), chunkManager)
+            && areTaskVersionsCurrent(task);
+    }
+
+    private boolean areTaskVersionsCurrent(RenderCompileTask task) {
+        for (Map.Entry<RenderSectionKey, Integer> entry : task.versions().entrySet()) {
+            Integer expectedVersion = buildVersions.get(entry.getKey());
+            if (expectedVersion == null || !expectedVersion.equals(entry.getValue())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean isChunkGenerated(ChunkCoord coord, ChunkManager chunkManager) {
+        Chunk chunk = chunkManager.getChunk(coord);
+        return chunk != null && chunk.isGenerated();
+    }
+
+    private boolean isChunkVisibleAndGenerated(ChunkCoord coord, ChunkManager chunkManager) {
+        return isChunkGenerated(coord, chunkManager) && chunkManager.isChunkVisible(coord);
+    }
+
+    private void removeBuildVersions(Set<RenderSectionKey> keys) {
+        if (keys == null || keys.isEmpty()) {
+            return;
+        }
+        for (RenderSectionKey key : keys) {
+            buildVersions.remove(key);
+        }
     }
 
     private void disposeSectionMesh(RenderSectionKey key) {
@@ -625,9 +749,98 @@ public class ChunkMeshManager {
     }
 
     private record CompileBatchResult(
-        Map<RenderSectionKey, Integer> versions,
+        RenderCompileTask task,
         Map<RenderSectionKey, BlockMeshBuilder.CompiledSectionMesh> compiledSections
     ) {
+    }
+
+    private enum CompileTaskStatus {
+        PENDING,
+        COMPILING,
+        UPLOADING,
+        DONE,
+        CANCELED
+    }
+
+    private static class RenderCompileTask {
+        private final long id;
+        private final ChunkCoord coord;
+        private final Set<Integer> sections;
+        private final Map<RenderSectionKey, Integer> versions;
+        private volatile CompileTaskStatus status = CompileTaskStatus.PENDING;
+
+        private RenderCompileTask(
+            long id,
+            ChunkCoord coord,
+            Set<Integer> sections,
+            Map<RenderSectionKey, Integer> versions
+        ) {
+            this.id = id;
+            this.coord = coord;
+            this.sections = sections;
+            this.versions = versions;
+        }
+
+        private long id() {
+            return id;
+        }
+
+        private ChunkCoord coord() {
+            return coord;
+        }
+
+        private Set<Integer> sections() {
+            return sections;
+        }
+
+        private Map<RenderSectionKey, Integer> versions() {
+            return versions;
+        }
+
+        private int sectionCount() {
+            return sections.size();
+        }
+
+        private synchronized boolean start() {
+            if (status != CompileTaskStatus.PENDING) {
+                return false;
+            }
+            status = CompileTaskStatus.COMPILING;
+            return true;
+        }
+
+        private synchronized boolean cancel() {
+            if (status == CompileTaskStatus.DONE || status == CompileTaskStatus.CANCELED) {
+                return false;
+            }
+            status = CompileTaskStatus.CANCELED;
+            return true;
+        }
+
+        private void markUploading() {
+            if (!isCanceled()) {
+                status = CompileTaskStatus.UPLOADING;
+            }
+        }
+
+        private void markDone() {
+            if (!isCanceled()) {
+                status = CompileTaskStatus.DONE;
+            }
+        }
+
+        private boolean isCanceled() {
+            return status == CompileTaskStatus.CANCELED;
+        }
+
+        private boolean containsAny(Set<RenderSectionKey> keys) {
+            for (RenderSectionKey key : keys) {
+                if (versions.containsKey(key)) {
+                    return true;
+                }
+            }
+            return false;
+        }
     }
 
     private record CompiledSectionApplication(

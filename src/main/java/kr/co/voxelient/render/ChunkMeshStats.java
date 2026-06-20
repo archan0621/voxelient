@@ -15,10 +15,12 @@ public record ChunkMeshStats(
     int queuedCompileBatches,
     int appliedMeshSections,
     int discardedMeshSections,
+    int canceledCompileTasks,
+    int staleCompileResults,
     long meshApplyMs,
     boolean compileThrottled
 ) {
     public static ChunkMeshStats empty() {
-        return new ChunkMeshStats(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0L, false);
+        return new ChunkMeshStats(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0L, false);
     }
 }
