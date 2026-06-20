@@ -14,6 +14,7 @@ import kr.co.voxelite.world.World;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -34,6 +35,8 @@ public class ChunkMeshManager {
     private static final int MAX_IN_FLIGHT_COMPILES = 2;
     private static final int MAX_COMPLETED_BATCH_DRAINS_PER_FRAME = 1;
     private static final int MAX_PENDING_MESH_APPLICATIONS = 64;
+    private static final int MAX_SECTION_VISIBILITY_TRAVERSAL_MESHES = 512;
+    private static final int MAX_MISSING_MESH_REPAIR_SCAN_CHUNKS = 96;
     private static final long DEFAULT_MESH_APPLY_BUDGET_MS = 4L;
     private static final SectionVisibility DEFAULT_VISIBILITY = SectionVisibility.allVisible();
 
@@ -42,6 +45,7 @@ public class ChunkMeshManager {
     private final Map<RenderSectionKey, ChunkMesh> meshes = new HashMap<>();
     private final Map<RenderSectionKey, SectionVisibility> sectionVisibility = new HashMap<>();
     private final Map<RenderSectionKey, Integer> buildVersions = new HashMap<>();
+    private final Set<RenderSectionKey> emptySections = new HashSet<>();
     private final Map<ChunkCoord, Set<Integer>> deferredDirtySectionsByChunk = new HashMap<>();
     private final Map<Long, RenderCompileTask> activeCompileTasks = new HashMap<>();
     private final Queue<CompileBatchResult> completedCompiles = new ConcurrentLinkedQueue<>();
@@ -72,6 +76,7 @@ public class ChunkMeshManager {
     }
 
     public void processDirtyChunks(int maxCompileBatchesPerFrame, int maxMeshApplicationsPerFrame, long meshApplyBudgetMs) {
+        long t0 = PerformanceLogger.now();
         ChunkManager chunkManager = world.getChunkManager();
         if (chunkManager == null) {
             return;
@@ -131,6 +136,12 @@ public class ChunkMeshManager {
                 selectedChunks++;
             }
 
+            selectedChunks += repairMissingVisibleMeshes(
+                dirtySectionsByChunk,
+                chunkManager,
+                availableCompileSlots - selectedChunks
+            );
+
             for (Map.Entry<ChunkCoord, Set<Integer>> entry : dirtySectionsByChunk.entrySet()) {
                 ChunkCoord coord = entry.getKey();
                 Chunk chunk = chunkManager.getChunk(coord);
@@ -167,6 +178,14 @@ public class ChunkMeshManager {
             applySummary.elapsedMs(),
             compileThrottled
         );
+        logMeshProcess(
+            t0,
+            completedBatches,
+            selectedChunks,
+            queuedCompileBatches,
+            applySummary,
+            compileThrottled
+        );
     }
 
     public ChunkMeshStats getStats() {
@@ -183,6 +202,43 @@ public class ChunkMeshManager {
 
     public int getInFlightCompileCount() {
         return inFlightCompiles;
+    }
+
+    private void logMeshProcess(
+        long startMs,
+        int completedBatches,
+        int selectedChunks,
+        int queuedCompileBatches,
+        MeshApplySummary applySummary,
+        boolean compileThrottled
+    ) {
+        if (!PerformanceLogger.ENABLED) {
+            return;
+        }
+
+        long elapsedMs = PerformanceLogger.now() - startMs;
+        if (!PerformanceLogger.shouldLogSlow(elapsedMs, PerformanceLogger.SLOW_MESH_PROCESS_MS)
+            && !PerformanceLogger.shouldLogSlow(applySummary.elapsedMs(), PerformanceLogger.SLOW_MESH_PROCESS_MS)
+            && !PerformanceLogger.shouldLogInterval()) {
+            return;
+        }
+
+        System.out.printf(
+            "[PERF][ChunkMeshManager] process=%dms apply=%d/%d discarded=%d completed=%d selected=%d queued=%d active=%d pending=%d deferred=%d canceled=%d stale=%d%s%n",
+            elapsedMs,
+            applySummary.applied(),
+            applySummary.elapsedMs(),
+            applySummary.discarded(),
+            completedBatches,
+            selectedChunks,
+            queuedCompileBatches,
+            inFlightCompiles,
+            pendingMeshApplications.size(),
+            countDeferredDirtySections(),
+            frameCanceledCompileTasks,
+            frameStaleCompileResults,
+            compileThrottled ? " throttled" : ""
+        );
     }
 
     private int drainCompletedCompiles(int maxBatches, ChunkManager chunkManager) {
@@ -256,6 +312,7 @@ public class ChunkMeshManager {
             disposeSectionMesh(key);
             sectionVisibility.remove(key);
             buildVersions.remove(key);
+            emptySections.remove(key);
             removeDeferredSections(key.chunkCoord());
             invalidateTraversalCache();
             return false;
@@ -264,6 +321,7 @@ public class ChunkMeshManager {
             disposeSectionMesh(key);
             sectionVisibility.remove(key);
             buildVersions.remove(key);
+            emptySections.remove(key);
             deferDirtySection(key);
             invalidateTraversalCache();
             frameStaleCompileResults++;
@@ -274,11 +332,13 @@ public class ChunkMeshManager {
         if (compiledSection == null) {
             disposeSectionMesh(key);
             sectionVisibility.remove(key);
+            emptySections.add(key);
             invalidateTraversalCache();
             return true;
         }
 
         sectionVisibility.put(key, compiledSection.visibility());
+        emptySections.remove(key);
         invalidateTraversalCache();
         disposeSectionMesh(key);
         ChunkMesh mesh = meshBuilder.buildCompiledChunkMesh(compiledSection);
@@ -306,6 +366,7 @@ public class ChunkMeshManager {
                 entry.getValue().dispose();
                 sectionVisibility.remove(entry.getKey());
                 buildVersions.remove(entry.getKey());
+                emptySections.remove(entry.getKey());
                 iterator.remove();
                 if (invisible) {
                     deferDirtySection(entry.getKey());
@@ -320,67 +381,179 @@ public class ChunkMeshManager {
             Chunk chunk = chunkManager.getChunk(key.chunkCoord());
             return chunk == null || !chunk.isGenerated() || !chunkManager.isChunkVisible(key.chunkCoord());
         });
-        if (removedMesh || removedVisibility) {
+        boolean removedEmptySections = emptySections.removeIf(key -> {
+            Chunk chunk = chunkManager.getChunk(key.chunkCoord());
+            return chunk == null || !chunk.isGenerated() || !chunkManager.isChunkVisible(key.chunkCoord());
+        });
+        if (removedMesh || removedVisibility || removedEmptySections) {
             invalidateTraversalCache();
         }
     }
 
     public List<ModelInstance> getVisibleInstances(Camera camera) {
         List<ModelInstance> visibleInstances = new ArrayList<>();
+        Map<BlockRenderLayer, List<ModelInstance>> instancesByLayer = getVisibleInstancesByLayer(camera);
         for (BlockRenderLayer renderLayer : BlockRenderLayer.values()) {
-            visibleInstances.addAll(getVisibleInstances(camera, renderLayer));
+            visibleInstances.addAll(instancesByLayer.get(renderLayer));
         }
         return visibleInstances;
     }
 
     public List<ModelInstance> getVisibleInstances(Camera camera, BlockRenderLayer renderLayer) {
-        ChunkManager chunkManager = world.getChunkManager();
-        List<LayerInstance> visibleInstances = new ArrayList<>(meshes.size());
-        if (chunkManager == null) {
+        if (renderLayer == null) {
             return List.of();
+        }
+        return getVisibleInstancesByLayer(camera).get(renderLayer);
+    }
+
+    public Map<BlockRenderLayer, List<ModelInstance>> getVisibleInstancesByLayer(Camera camera) {
+        long t0 = PerformanceLogger.now();
+        ChunkManager chunkManager = world.getChunkManager();
+        Map<BlockRenderLayer, List<LayerInstance>> visibleInstancesByLayer = createLayerBuckets();
+        if (chunkManager == null) {
+            return toModelInstanceBuckets(visibleInstancesByLayer);
         }
 
         RenderSectionKey cameraSection = getCameraSection(camera);
         Set<RenderSectionKey> traversableSections = cameraSection != null
             ? getCachedTraversableSections(cameraSection, chunkManager)
             : null;
+        int traversableCount = traversableSections != null ? traversableSections.size() : -1;
+        int scanned = 0;
+        int chunkCulled = 0;
+        int traversalCulled = 0;
+        int frustumCulled = 0;
+        int visibleSections = 0;
 
         for (Map.Entry<RenderSectionKey, ChunkMesh> entry : meshes.entrySet()) {
+            scanned++;
             RenderSectionKey key = entry.getKey();
             Chunk chunk = chunkManager.getChunk(key.chunkCoord());
             if (chunk == null || !chunk.isGenerated() || !chunkManager.isChunkVisible(key.chunkCoord())) {
+                chunkCulled++;
                 continue;
             }
             if (traversableSections != null
                 && !traversableSections.contains(key)
                 && !isNearCameraSection(key, cameraSection)) {
+                traversalCulled++;
                 continue;
             }
 
             ChunkMesh mesh = entry.getValue();
-            if (mesh == null || !mesh.hasInstance(renderLayer)) {
+            if (mesh == null || !mesh.hasInstance()) {
+                chunkCulled++;
                 continue;
             }
 
             boolean nearCameraSection = isNearCameraSection(key, cameraSection);
             if (camera == null || nearCameraSection || camera.frustum.boundsInFrustum(mesh.getBounds())) {
-                visibleInstances.add(new LayerInstance(mesh.getInstance(renderLayer), mesh.getBounds()));
+                visibleSections++;
+                addVisibleLayerInstances(visibleInstancesByLayer, mesh);
+            } else {
+                frustumCulled++;
             }
         }
 
-        if (renderLayer == BlockRenderLayer.TRANSLUCENT && camera != null) {
-            visibleInstances = TranslucentRenderOrder.backToFront(
+        List<LayerInstance> translucentInstances = visibleInstancesByLayer.get(BlockRenderLayer.TRANSLUCENT);
+        if (camera != null && !translucentInstances.isEmpty()) {
+            visibleInstancesByLayer.put(BlockRenderLayer.TRANSLUCENT, TranslucentRenderOrder.backToFront(
                 camera,
-                visibleInstances,
+                translucentInstances,
                 LayerInstance::bounds
-            );
+            ));
         }
 
-        List<ModelInstance> instances = new ArrayList<>(visibleInstances.size());
-        for (LayerInstance visibleInstance : visibleInstances) {
-            instances.add(visibleInstance.instance());
+        logVisibleCollection(
+            t0,
+            scanned,
+            visibleSections,
+            chunkCulled,
+            traversalCulled,
+            frustumCulled,
+            traversableCount,
+            visibleInstancesByLayer
+        );
+        return toModelInstanceBuckets(visibleInstancesByLayer);
+    }
+
+    private Map<BlockRenderLayer, List<LayerInstance>> createLayerBuckets() {
+        Map<BlockRenderLayer, List<LayerInstance>> buckets = new EnumMap<>(BlockRenderLayer.class);
+        for (BlockRenderLayer renderLayer : BlockRenderLayer.values()) {
+            buckets.put(renderLayer, new ArrayList<>());
         }
-        return instances;
+        return buckets;
+    }
+
+    private void addVisibleLayerInstances(
+        Map<BlockRenderLayer, List<LayerInstance>> visibleInstancesByLayer,
+        ChunkMesh mesh
+    ) {
+        for (BlockRenderLayer renderLayer : BlockRenderLayer.values()) {
+            if (mesh.hasInstance(renderLayer)) {
+                visibleInstancesByLayer.get(renderLayer).add(
+                    new LayerInstance(mesh.getInstance(renderLayer), mesh.getBounds())
+                );
+            }
+        }
+    }
+
+    private Map<BlockRenderLayer, List<ModelInstance>> toModelInstanceBuckets(
+        Map<BlockRenderLayer, List<LayerInstance>> layerInstancesByLayer
+    ) {
+        Map<BlockRenderLayer, List<ModelInstance>> buckets = new EnumMap<>(BlockRenderLayer.class);
+        for (BlockRenderLayer renderLayer : BlockRenderLayer.values()) {
+            List<LayerInstance> layerInstances = layerInstancesByLayer.get(renderLayer);
+            List<ModelInstance> modelInstances = new ArrayList<>(layerInstances.size());
+            for (LayerInstance layerInstance : layerInstances) {
+                modelInstances.add(layerInstance.instance());
+            }
+            buckets.put(renderLayer, modelInstances);
+        }
+        return buckets;
+    }
+
+    private void logVisibleCollection(
+        long startMs,
+        int scanned,
+        int visibleSections,
+        int chunkCulled,
+        int traversalCulled,
+        int frustumCulled,
+        int traversableCount,
+        Map<BlockRenderLayer, List<LayerInstance>> visibleInstancesByLayer
+    ) {
+        if (!PerformanceLogger.ENABLED) {
+            return;
+        }
+
+        long elapsedMs = PerformanceLogger.now() - startMs;
+        int solid = visibleInstancesByLayer.get(BlockRenderLayer.SOLID).size();
+        int cutout = visibleInstancesByLayer.get(BlockRenderLayer.CUTOUT).size();
+        int translucent = visibleInstancesByLayer.get(BlockRenderLayer.TRANSLUCENT).size();
+        int totalInstances = solid + cutout + translucent;
+        if (!PerformanceLogger.shouldLogSlow(elapsedMs, PerformanceLogger.SLOW_COLLECT_MS)
+            && !PerformanceLogger.shouldLogInterval()) {
+            return;
+        }
+
+        System.out.printf(
+            "[PERF][ChunkMeshManager] collect=%dms scanned=%d visibleSections=%d instances=%d solid=%d cutout=%d translucent=%d cull(chunk=%d traversal=%d frustum=%d) traversable=%d mesh=%d active=%d pending=%d%n",
+            elapsedMs,
+            scanned,
+            visibleSections,
+            totalInstances,
+            solid,
+            cutout,
+            translucent,
+            chunkCulled,
+            traversalCulled,
+            frustumCulled,
+            traversableCount,
+            meshes.size(),
+            inFlightCompiles,
+            pendingMeshApplications.size()
+        );
     }
 
     public void dispose() {
@@ -400,6 +573,7 @@ public class ChunkMeshManager {
         meshes.clear();
         sectionVisibility.clear();
         buildVersions.clear();
+        emptySections.clear();
         deferredDirtySectionsByChunk.clear();
         activeCompileTasks.clear();
         completedCompiles.clear();
@@ -424,13 +598,15 @@ public class ChunkMeshManager {
             entry.getValue().dispose();
             sectionVisibility.remove(entry.getKey());
             buildVersions.remove(entry.getKey());
+            emptySections.remove(entry.getKey());
             iterator.remove();
             removedMesh = true;
         }
 
         boolean removedVisibility = sectionVisibility.keySet().removeIf(key -> key.chunkCoord().equals(coord));
         boolean removedBuildVersions = buildVersions.keySet().removeIf(key -> key.chunkCoord().equals(coord));
-        if (removedMesh || removedVisibility || removedBuildVersions) {
+        boolean removedEmptySections = emptySections.removeIf(key -> key.chunkCoord().equals(coord));
+        if (removedMesh || removedVisibility || removedBuildVersions || removedEmptySections) {
             invalidateTraversalCache();
         }
     }
@@ -463,6 +639,85 @@ public class ChunkMeshManager {
             drained++;
         }
         return drained;
+    }
+
+    private int repairMissingVisibleMeshes(
+        Map<ChunkCoord, Set<Integer>> target,
+        ChunkManager chunkManager,
+        int maxChunks
+    ) {
+        if (maxChunks <= 0) {
+            return 0;
+        }
+
+        int repaired = 0;
+        for (Chunk chunk : chunkManager.getVisibleGeneratedChunksByDistance(MAX_MISSING_MESH_REPAIR_SCAN_CHUNKS)) {
+            if (repaired >= maxChunks) {
+                break;
+            }
+
+            ChunkCoord coord = chunk.getCoord();
+            if (target.containsKey(coord)) {
+                continue;
+            }
+
+            Set<Integer> missingSections = findMissingMeshSections(chunk);
+            if (missingSections.isEmpty()) {
+                continue;
+            }
+
+            missingSections.addAll(chunkManager.drainDirtySections(coord));
+            target.put(coord, missingSections);
+            repaired++;
+        }
+        return repaired;
+    }
+
+    private Set<Integer> findMissingMeshSections(Chunk chunk) {
+        Set<Integer> missingSections = new HashSet<>();
+        if (chunk == null || !chunk.isGenerated()) {
+            return missingSections;
+        }
+
+        ChunkCoord coord = chunk.getCoord();
+        for (Chunk.BlockData block : chunk.getBlocks()) {
+            int sectionY = Chunk.getRenderSectionIndex(block.pos.y());
+            if (!Chunk.isValidRenderSectionIndex(sectionY)) {
+                continue;
+            }
+
+            RenderSectionKey key = new RenderSectionKey(coord, sectionY);
+            if (hasKnownRenderState(key)) {
+                continue;
+            }
+            missingSections.add(sectionY);
+        }
+        return missingSections;
+    }
+
+    private boolean hasKnownRenderState(RenderSectionKey key) {
+        return meshes.containsKey(key)
+            || emptySections.contains(key)
+            || isSectionPendingApplication(key)
+            || isSectionInActiveCompile(key);
+    }
+
+    private boolean isSectionPendingApplication(RenderSectionKey key) {
+        for (CompiledSectionApplication application : pendingMeshApplications) {
+            if (application.key().equals(key)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isSectionInActiveCompile(RenderSectionKey key) {
+        for (RenderCompileTask task : activeCompileTasks.values()) {
+            if (!task.isCanceled() && task.versions().containsKey(key)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void deferDirtySection(RenderSectionKey key) {
@@ -516,6 +771,7 @@ public class ChunkMeshManager {
         for (RenderSectionKey key : sectionInputs.keySet()) {
             int version = buildVersions.getOrDefault(key, 0) + 1;
             buildVersions.put(key, version);
+            emptySections.remove(key);
             versions.put(key, version);
         }
 
@@ -628,6 +884,7 @@ public class ChunkMeshManager {
         }
         for (RenderSectionKey key : keys) {
             buildVersions.remove(key);
+            emptySections.remove(key);
         }
     }
 
@@ -647,7 +904,7 @@ public class ChunkMeshManager {
             return cachedTraversableSections;
         }
 
-        if (inFlightCompiles > 0) {
+        if (shouldSkipSectionVisibilityTraversal()) {
             return null;
         }
 
@@ -655,6 +912,10 @@ public class ChunkMeshManager {
         cachedTraversalRevision = visibilityRevision;
         cachedTraversableSections = collectTraversableSections(start, chunkManager);
         return cachedTraversableSections;
+    }
+
+    private boolean shouldSkipSectionVisibilityTraversal() {
+        return inFlightCompiles > 0 || meshes.size() > MAX_SECTION_VISIBILITY_TRAVERSAL_MESHES;
     }
 
     private void invalidateTraversalCache() {

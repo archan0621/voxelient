@@ -146,10 +146,14 @@ public class BlockMeshBuilder {
             ));
         }
 
-        if (PerformanceLogger.ENABLED) {
-            long ms = PerformanceLogger.now() - t0;
+        long ms = PerformanceLogger.now() - t0;
+        if (PerformanceLogger.shouldLogSlow(ms, PerformanceLogger.SLOW_MESH_PREPARE_MS)) {
             System.out.printf("[PERF][BlockMeshBuilder] prepareSectionBuildInputs chunk(%d,%d): %d ms, sections=%d, skipped=%d%n",
-                chunkCoord.x, chunkCoord.z, ms, sectionInputs.size(), skippedBlocks);
+                chunkCoord.x,
+                chunkCoord.z,
+                ms,
+                sectionInputs.size(),
+                skippedBlocks);
         }
         return sectionInputs;
     }
@@ -205,7 +209,7 @@ public class BlockMeshBuilder {
         }
 
         long t1 = PerformanceLogger.now();
-        if (PerformanceLogger.ENABLED && (t1 - t0) > 10) {
+        if (PerformanceLogger.shouldLogSlow(t1 - t0, PerformanceLogger.SLOW_MESH_BUILD_MS)) {
             System.out.printf("[PERF][BlockMeshBuilder] buildCompiledChunkMesh: mesh=%dms quads=%d%n",
                 t1 - t0, mergedQuads.size());
         }

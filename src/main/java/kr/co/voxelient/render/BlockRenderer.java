@@ -15,6 +15,7 @@ import kr.co.voxelite.world.BlockRenderLayer;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * Renders chunk instances.
@@ -78,20 +79,41 @@ public class BlockRenderer {
 
     public void render(PerspectiveCamera camera, ChunkMeshManager meshManager) {
         long t0 = PerformanceLogger.now();
-        int drawCalls = 0;
+        Map<BlockRenderLayer, List<ModelInstance>> visibleInstancesByLayer =
+            meshManager.getVisibleInstancesByLayer(camera);
+        long afterCollect = PerformanceLogger.now();
 
         beginOpaqueState();
-        drawCalls += renderLayer(camera, meshManager, BlockRenderLayer.SOLID);
-        drawCalls += renderLayer(camera, meshManager, BlockRenderLayer.CUTOUT);
+        LayerRenderSummary solidSummary = renderLayer(camera, visibleInstancesByLayer.get(BlockRenderLayer.SOLID));
+        LayerRenderSummary cutoutSummary = renderLayer(camera, visibleInstancesByLayer.get(BlockRenderLayer.CUTOUT));
 
         beginTranslucentState();
-        drawCalls += renderLayer(camera, meshManager, BlockRenderLayer.TRANSLUCENT);
+        LayerRenderSummary translucentSummary = renderLayer(
+            camera,
+            visibleInstancesByLayer.get(BlockRenderLayer.TRANSLUCENT)
+        );
         endTranslucentState();
 
         long t2 = PerformanceLogger.now();
-        if (PerformanceLogger.ENABLED && (t2 - t0 > 5 || drawCalls > 30)) {
-            System.out.printf("[PERF][BlockRenderer] render=%dms drawCalls=%d%n",
-                t2 - t0, drawCalls);
+        int drawCalls = solidSummary.drawCalls() + cutoutSummary.drawCalls() + translucentSummary.drawCalls();
+        long collectMs = afterCollect - t0;
+        long drawMs = t2 - afterCollect;
+        long totalMs = t2 - t0;
+        if (PerformanceLogger.shouldLogSlowOrInterval(totalMs, PerformanceLogger.SLOW_RENDER_MS)
+            || PerformanceLogger.shouldLogSlow(collectMs, PerformanceLogger.SLOW_COLLECT_MS)) {
+            System.out.printf(
+                "[PERF][BlockRenderer] total=%dms collect=%dms draw=%dms calls=%d solid=%d/%dms cutout=%d/%dms translucent=%d/%dms%n",
+                totalMs,
+                collectMs,
+                drawMs,
+                drawCalls,
+                solidSummary.drawCalls(),
+                solidSummary.elapsedMs(),
+                cutoutSummary.drawCalls(),
+                cutoutSummary.elapsedMs(),
+                translucentSummary.drawCalls(),
+                translucentSummary.elapsedMs()
+            );
         }
     }
 
@@ -115,14 +137,18 @@ public class BlockRenderer {
         Gdx.gl.glDisable(GL20.GL_BLEND);
     }
 
-    private int renderLayer(PerspectiveCamera camera, ChunkMeshManager meshManager, BlockRenderLayer renderLayer) {
+    private LayerRenderSummary renderLayer(PerspectiveCamera camera, List<ModelInstance> instances) {
+        if (instances == null || instances.isEmpty()) {
+            return new LayerRenderSummary(0, 0L);
+        }
+
+        long t0 = PerformanceLogger.now();
         modelBatch.begin(camera);
-        List<ModelInstance> instances = meshManager.getVisibleInstances(camera, renderLayer);
         for (ModelInstance instance : instances) {
             modelBatch.render(instance, environment);
         }
         modelBatch.end();
-        return instances.size();
+        return new LayerRenderSummary(instances.size(), PerformanceLogger.now() - t0);
     }
 
     public void dispose() {
@@ -139,5 +165,8 @@ public class BlockRenderer {
     private float clampFogEndRatio(float startRatio, float endRatio) {
         float safeEnd = Math.max(0f, Math.min(1f, Float.isFinite(endRatio) ? endRatio : 0.94f));
         return Math.max(startRatio + 0.01f, safeEnd);
+    }
+
+    private record LayerRenderSummary(int drawCalls, long elapsedMs) {
     }
 }
