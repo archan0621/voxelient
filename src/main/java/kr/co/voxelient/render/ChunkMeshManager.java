@@ -344,6 +344,8 @@ public class ChunkMeshManager {
         ChunkMesh mesh = meshBuilder.buildCompiledChunkMesh(compiledSection);
         if (mesh != null) {
             meshes.put(key, mesh);
+        } else {
+            emptySections.add(key);
         }
         return true;
     }
@@ -848,6 +850,12 @@ public class ChunkMeshManager {
         for (RenderCompileTask task : activeCompileTasks.values()) {
             if (task.containsAny(keys) && task.cancel()) {
                 frameCanceledCompileTasks++;
+                // The replacement only covers keys; retain the rest of the canceled batch.
+                for (RenderSectionKey key : task.versions().keySet()) {
+                    if (!keys.contains(key)) {
+                        world.getChunkManager().addDirtySection(key.chunkCoord(), key.sectionY());
+                    }
+                }
             }
         }
     }
